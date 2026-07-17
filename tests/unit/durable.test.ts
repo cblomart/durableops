@@ -313,6 +313,30 @@ describe('getInstance', () => {
     expect(result.value.historyEvents[0]?.eventType).toBe('ExecutionStarted');
   });
 
+  it('keeps the complete raw event and the activity input, losing nothing', async () => {
+    const rawEvent = {
+      EventType: 'TaskScheduled',
+      Name: 'ChargeCard',
+      Input: '{"amount":42}',
+      Version: '',
+      Correlation: null,
+      Timestamp: '2026-06-04T10:46:42Z',
+    };
+    const fetchMock = mockFetch(jsonResponse({ ...instanceRow(), historyEvents: [rawEvent] }));
+
+    const result = await getInstance(TARGET, 'abc123', fetchMock);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const event = result.value.historyEvents[0];
+    // Parsed convenience fields...
+    expect(event?.functionName).toBe('ChargeCard');
+    expect(event?.input).toBe('{"amount":42}');
+    // ...but the whole event is preserved verbatim for investigation.
+    expect(event?.raw).toEqual(rawEvent);
+    expect(event?.raw['Correlation']).toBeNull();
+  });
+
   it('treats a missing history as empty rather than failing', async () => {
     const fetchMock = mockFetch(jsonResponse(instanceRow()));
 

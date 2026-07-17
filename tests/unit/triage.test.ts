@@ -40,10 +40,12 @@ function event(eventType: string, timestamp: string, functionName?: string): His
     timestamp,
     functionName,
     scheduledTime: undefined,
+    input: null,
     result: null,
     reason: undefined,
     details: undefined,
     orchestrationStatus: undefined,
+    raw: { EventType: eventType, Timestamp: timestamp },
   };
 }
 

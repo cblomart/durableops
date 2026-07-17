@@ -206,11 +206,44 @@ test.describe('instance detail', () => {
     await summary.getByRole('button', { name: 'Show detail' }).click();
     await expect(page.getByText(/System\.Exception/)).toBeVisible();
 
-    // Investigation: each history event expands to reveal its own payload.
+    // Investigation: each history event expands to its full detail, including
+    // the complete raw event — the parsed fields are a convenience, not a filter.
     const failedRow = page.locator('.row.failed');
-    await expect(failedRow.locator('.payload')).toHaveCount(0);
+    await expect(failedRow.locator('.event-detail')).toHaveCount(0);
     await failedRow.locator('.line').click();
-    await expect(failedRow.locator('.payload')).toBeVisible();
+    await expect(failedRow.locator('.event-detail')).toBeVisible();
+    await expect(failedRow.getByText('Raw event')).toBeVisible();
+  });
+
+  test('surfaces instance input and custom status, and expands every event at once', async ({
+    page,
+  }) => {
+    await stubAzure(page, {
+      instances: [instance('abc123', 'OrderSaga', 'Running')],
+      detailStatus: 'Running',
+      history: [
+        { EventType: 'ExecutionStarted', Name: 'OrderSaga', Timestamp: '2026-06-04T10:00:00Z' },
+        {
+          EventType: 'TaskCompleted',
+          Name: 'ReserveStock',
+          Result: '"reserved"',
+          Timestamp: '2026-06-04T10:00:01Z',
+        },
+      ],
+    });
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+    await page.locator('.idtext', { hasText: /^abc123$/ }).click();
+
+    // Instance-level payloads are first-class, not buried.
+    await expect(page.locator('.payloads')).toContainText('Custom status');
+    await expect(page.locator('.payloads')).toContainText('Input');
+
+    // Expand all dumps every event's detail for an expert who wants everything.
+    await page.getByRole('button', { name: 'Expand all' }).click();
+    await expect(page.locator('.event-detail')).toHaveCount(2);
+    await page.getByRole('button', { name: 'Collapse all' }).click();
+    await expect(page.locator('.event-detail')).toHaveCount(0);
   });
 
   test('walks between failures and collapses to failures only', async ({ page }) => {

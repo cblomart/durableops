@@ -51,11 +51,22 @@ export interface HistoryEvent {
   timestamp: string;
   functionName: string | undefined;
   scheduledTime: string | undefined;
+  /** What the activity was called with (on scheduled events). */
+  input: unknown;
+  /** What the activity returned (on completed events). */
   result: unknown;
   /** Failure text, when the event is a failure. */
   reason: string | undefined;
   details: string | undefined;
   orchestrationStatus: string | undefined;
+  /**
+   * The complete, unmodified event as the runtime sent it.
+   *
+   * Kept so the operator can always see the raw message: the parsed fields above
+   * are a convenience, not a filter. When a terse headline is not enough to make
+   * sense of a failure, this is the evidence.
+   */
+  raw: Record<string, unknown>;
 }
 
 export interface InstanceDetail extends OrchestrationInstance {
@@ -277,10 +288,12 @@ function toHistoryEvent(row: unknown): HistoryEvent | null {
      */
     functionName: optionalStr(record, 'functionName') ?? optionalStr(record, 'name'),
     scheduledTime: optionalStr(record, 'scheduledTime'),
+    input: field(record, 'input') ?? null,
     result: field(record, 'result') ?? null,
     reason: optionalStr(record, 'reason'),
     details: optionalStr(record, 'details'),
     orchestrationStatus: optionalStr(record, 'orchestrationStatus'),
+    raw: record,
   };
 }
 

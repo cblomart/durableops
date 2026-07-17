@@ -78,19 +78,20 @@ const isProblem = computed(
       </div>
     </dl>
 
-    <HistoryTimeline :events="detail.historyEvents" :stuck-index="stuck.index" />
-
     <!--
-      Raw payloads live below the investigation surface now, collapsed: the
-      timeline and summary are what an operator needs first. Output is redundant
-      with the failure summary for problem instances, so it is hidden there.
+      Instance payloads, first-class rather than buried. The input anchors "which
+      customer/order is this", and custom status is where developers log their
+      own diagnostics — often the thing that actually explains a failure. Each is
+      collapsed by JsonBlock when large; Output is redundant with the failure
+      summary on a problem instance, so it is shown only otherwise.
     -->
-    <details class="raw">
-      <summary>Raw payloads</summary>
+    <section class="payloads">
       <JsonBlock label="Input" :value="detail.input" />
       <JsonBlock label="Custom status" :value="detail.customStatus" />
       <JsonBlock v-if="!isProblem" label="Output" :value="detail.output" />
-    </details>
+    </section>
+
+    <HistoryTimeline :events="detail.historyEvents" :stuck-index="stuck.index" />
   </section>
 </template>
 
@@ -123,17 +124,8 @@ const isProblem = computed(
   margin-bottom: 10px;
 }
 
-.raw {
-  margin-top: 16px;
-}
-
-.raw summary {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  color: var(--text-faint);
-  cursor: pointer;
-  margin-bottom: 8px;
+.payloads {
+  margin: 0 0 12px;
 }
 
 .meta {

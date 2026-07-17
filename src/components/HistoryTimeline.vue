@@ -1,13 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, useTemplateRef, nextTick } from 'vue';
 import type { HistoryEvent } from '../api/durable';
-import {
-  failureIndices,
-  failureIndicesWithContext,
-  gapBefore,
-  isFailureEvent,
-  parseDurableError,
-} from '../triage';
+import { failureIndices, failureIndicesWithContext, gapBefore, isFailureEvent } from '../triage';
+import JsonBlock from './JsonBlock.vue';
 
 const props = defineProps<{
   events: HistoryEvent[];
@@ -18,7 +13,7 @@ const props = defineProps<{
 const failuresOnly = ref(false);
 const rowsRef = useTemplateRef<HTMLElement>('rows');
 
-/** Which rows are expanded to show their payload. Investigation is per-event. */
+/** Which rows are expanded to show their full detail. Investigation is per-event. */
 const expanded = ref<Set<number>>(new Set());
 
 const failures = computed(() => failureIndices(props.events));
@@ -32,17 +27,10 @@ interface Row {
   event: HistoryEvent;
   gap: string;
   failed: boolean;
-  /** The event's own payload (activity result, or a failure's message), pretty-printed. */
-  payload: string;
 }
 
-function payloadOf(event: HistoryEvent): string {
-  if (event.reason !== undefined || event.details !== undefined) {
-    const parsed = parseDurableError(event.reason ?? event.details);
-    return parsed.stack !== '' ? `${parsed.headline}\n\n${parsed.stack}` : parsed.headline;
-  }
-  if (event.result === null || event.result === undefined) return '';
-  return typeof event.result === 'string' ? event.result : JSON.stringify(event.result, null, 2);
+function present(value: unknown): boolean {
+  return value !== null && value !== undefined;
 }
 
 const rows = computed<Row[]>(() => {
@@ -53,7 +41,6 @@ const rows = computed<Row[]>(() => {
       event,
       gap: gapBefore(props.events, index),
       failed: isFailureEvent(event),
-      payload: payloadOf(event),
     }))
     .filter((row) => !failuresOnly.value || keep.has(row.index));
 });
@@ -63,6 +50,15 @@ function toggle(index: number): void {
   if (next.has(index)) next.delete(index);
   else next.add(index);
   expanded.value = next;
+}
+
+const allExpanded = computed(
+  () => rows.value.length > 0 && rows.value.every((row) => expanded.value.has(row.index))
+);
+
+/** Dump or hide every visible event at once — an expert wants all the evidence, fast. */
+function toggleAll(): void {
+  expanded.value = allExpanded.value ? new Set() : new Set(rows.value.map((row) => row.index));
 }
 
 async function scrollTo(index: number): Promise<void> {
@@ -109,6 +105,10 @@ async function step(delta: number): Promise<void> {
           Failures only
         </label>
       </template>
+
+      <button v-if="rows.length > 0" class="expandall" @click="toggleAll">
+        {{ allExpanded ? 'Collapse all' : 'Expand all' }}
+      </button>
     </header>
 
     <p v-if="events.length === 0" class="empty muted">
@@ -131,26 +131,30 @@ async function step(delta: number): Promise<void> {
         <span class="dot" />
         <div class="body">
           <button
-            class="line"
-            :class="{ clickable: row.payload !== '' }"
-            :disabled="row.payload === ''"
+            class="line clickable"
             :aria-expanded="expanded.has(row.index)"
             @click="toggle(row.index)"
           >
-            <span v-if="row.payload !== ''" class="chevron">{{
-              expanded.has(row.index) ? '▾' : '▸'
-            }}</span>
+            <span class="chevron">{{ expanded.has(row.index) ? '▾' : '▸' }}</span>
             <span class="type">{{ row.event.eventType }}</span>
             <span v-if="row.event.functionName" class="fn mono">{{ row.event.functionName }}</span>
             <span class="ts faint mono">{{ row.event.timestamp }}</span>
           </button>
 
           <!--
-            Payload is collapsed by default: activity inputs/outputs and stacks
-            can carry PII or secrets, and an operator screenshotting a ticket
-            should reveal them deliberately, not by default.
+            Full per-event detail on demand: the failure text, the activity's
+            input and result, and the complete raw event. Nothing is dropped —
+            the parsed fields above are a convenience, this is the evidence. All
+            collapsed by default, since payloads can carry PII or secrets that an
+            operator should reveal deliberately, not by accident in a screenshot.
           -->
-          <pre v-if="expanded.has(row.index)" class="payload mono">{{ row.payload }}</pre>
+          <div v-if="expanded.has(row.index)" class="event-detail">
+            <p v-if="row.event.reason" class="reason">{{ row.event.reason }}</p>
+            <JsonBlock v-if="present(row.event.input)" label="Input" :value="row.event.input" />
+            <JsonBlock v-if="present(row.event.result)" label="Result" :value="row.event.result" />
+            <JsonBlock v-if="row.event.details" label="Details" :value="row.event.details" />
+            <JsonBlock label="Raw event" :value="row.event.raw" />
+          </div>
         </div>
       </li>
     </ol>
@@ -272,10 +276,6 @@ async function step(delta: number): Promise<void> {
   cursor: pointer;
 }
 
-.line:disabled {
-  cursor: default;
-}
-
 .chevron {
   color: var(--text-faint);
   font-size: 10px;
@@ -293,19 +293,27 @@ async function step(delta: number): Promise<void> {
   font-size: 11px;
 }
 
-.payload {
-  margin: 3px 0 6px;
-  padding: 6px 8px;
+.event-detail {
+  margin: 4px 0 8px;
+  padding: 8px 10px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 3px;
-  max-height: 280px;
-  overflow: auto;
+  border-radius: 4px;
+}
+
+.row.failed .event-detail {
+  border-color: var(--danger);
+}
+
+.reason {
+  margin: 0 0 8px;
+  color: var(--danger);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.row.failed .payload {
-  border-color: var(--danger);
+.expandall {
+  font-size: 11px;
+  padding: 1px 8px;
 }
 </style>

@@ -144,6 +144,17 @@ describe.skipIf(!configured)('live harness', () => {
     expect(last?.functionName).toBe('NeverRuns');
   });
 
+  it('preserves the complete raw event for every history entry', async () => {
+    const detail = await getInstance(target, instanceNamed('FailOnActivity'));
+    expect(detail.ok).toBe(true);
+    if (!detail.ok) return;
+    for (const event of detail.value.historyEvents) {
+      // Nothing is dropped: each event carries its full raw object with a type.
+      expect(Object.keys(event.raw).length).toBeGreaterThan(0);
+      expect(event.raw['EventType'] ?? event.raw['eventType']).toBeTruthy();
+    }
+  });
+
   it('flags StuckAtScheduling as possibly stuck once the gap is long enough', async () => {
     const detail = await getInstance(target, instanceNamed('StuckAtScheduling'));
 
@@ -199,18 +210,27 @@ async function waitForStatus(
   return last;
 }
 
+/**
+ * Start a fresh scenario instance via the webhook start route, using the same
+ * system key. Lets each action test seed its own instance so the suite is
+ * idempotent and re-runnable, rather than depending on pre-seeded state that a
+ * previous action test may already have consumed.
+ */
+async function startScenario(scenario: string): Promise<string> {
+  const url = `https://${hostName}/runtime/webhooks/durabletask/orchestrators/${scenario}?code=${encodeURIComponent(systemKey)}`;
+  const response = await fetch(url, { method: 'POST' });
+  const body = (await response.json()) as { id: string };
+  return body.id;
+}
+
 // Tests in a file run in order by default, and vitest.integration.config sets
 // fileParallelism:false, so these mutating actions never race another suite.
 describe.skipIf(!configured)('live harness — actions transition instances', () => {
   const UPN = 'integration@durableops.test';
 
   it('suspends and then resumes a running instance', async () => {
-    const page = await listInstances(target, { runtimeStatus: ['Running'], top: 50 });
-    expect(page.ok).toBe(true);
-    if (!page.ok) return;
-    const happy = page.value.instances.find((i) => i.name === 'LongRunningHappy');
-    expect(happy, 'start the harness scenarios first').toBeDefined();
-    const id = happy!.instanceId;
+    const id = await startScenario('LongRunningHappy');
+    expect(await waitForStatus(target, id, 'Running')).toBe('Running');
 
     const suspended = await suspendInstance(target, id, UPN, 'integration: pause it');
     expect(suspended.ok).toBe(true);
@@ -219,27 +239,28 @@ describe.skipIf(!configured)('live harness — actions transition instances', ()
     const resumed = await resumeInstance(target, id, UPN, 'integration: resume it');
     expect(resumed.ok).toBe(true);
     expect(await waitForStatus(target, id, 'Running')).toBe('Running');
+
+    // Clean up so re-runs stay tidy.
+    await terminateInstance(target, id, UPN, 'integration: cleanup');
+    await waitForStatus(target, id, 'Terminated');
+    await purgeInstance(target, id);
   });
 
   it('raises an external event that a waiting orchestration consumes', async () => {
-    const page = await listInstances(target, { runtimeStatus: ['Running'], top: 50 });
-    if (!page.ok) return;
-    const waiter = page.value.instances.find((i) => i.name === 'WaitForExternalEvent');
-    expect(waiter, 'start the harness scenarios first').toBeDefined();
-    const id = waiter!.instanceId;
+    const id = await startScenario('WaitForExternalEvent');
+    expect(await waitForStatus(target, id, 'Running')).toBe('Running');
 
     const raised = await raiseEvent(target, id, 'Approval', { approved: true });
     expect(raised.ok).toBe(true);
     // The orchestrator completes once it receives the event.
     expect(await waitForStatus(target, id, 'Completed')).toBe('Completed');
+
+    await purgeInstance(target, id);
   });
 
   it('terminates a running instance, then purges it', async () => {
-    const page = await listInstances(target, { runtimeStatus: ['Running'], top: 50 });
-    if (!page.ok) return;
-    const victim = page.value.instances.find((i) => i.name === 'EternalTimer');
-    expect(victim, 'start the harness scenarios first').toBeDefined();
-    const id = victim!.instanceId;
+    const id = await startScenario('EternalTimer');
+    expect(await waitForStatus(target, id, 'Running')).toBe('Running');
 
     const terminated = await terminateInstance(target, id, UPN, 'integration: terminate it');
     expect(terminated.ok).toBe(true);
