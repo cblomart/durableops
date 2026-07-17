@@ -351,9 +351,12 @@ onBeforeUnmount(() => {
           {{ loading ? 'Loading…' : 'Load more' }}
         </button>
         <span class="spacer" />
-        <!-- Keyboard shortcuts, spelled out with arrows so the hint needs no decoding. -->
+        <!--
+          Keyboard shortcuts drawn as key-caps. All glyphs, no words: arrow keys
+          as arrows and Enter as its return-arrow (↵), so nothing needs decoding.
+        -->
         <span class="kbd faint" title="Keyboard shortcuts for this list">
-          <kbd>↑</kbd><kbd>↓</kbd> move · <kbd>Enter</kbd> open · <kbd>/</kbd> search
+          <kbd>↑</kbd><kbd>↓</kbd> move · <kbd>↵</kbd> open · <kbd>/</kbd> search
         </span>
       </div>
     </template>
@@ -640,15 +643,19 @@ input[type='number'] {
 
 .kbd kbd {
   display: inline-block;
-  min-width: 14px;
-  padding: 0 4px;
+  min-width: 16px;
+  padding: 1px 5px;
   margin: 0 1px;
   font-family: ui-monospace, monospace;
   font-size: 10px;
+  line-height: 1.35;
   text-align: center;
   color: var(--text-dim);
-  background: var(--bg);
+  background: var(--bg-raised);
   border: 1px solid var(--border);
-  border-radius: 3px;
+  /* A thicker bottom edge plus a soft shadow reads as a raised physical keycap. */
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  box-shadow: 0 1px 1px rgb(0 0 0 / 15%);
 }
 </style>
