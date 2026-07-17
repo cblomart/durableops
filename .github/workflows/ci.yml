@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege by default; jobs opt in to what they need.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Lint, types, tests, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Prettier
+        run: npm run format:check
+
+      # Enforces --max-warnings 0, complexity <= 10, max-lines-per-function,
+      # and the restricted-globals rules that encode the no-persistence model.
+      - name: ESLint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Thresholds are enforced inside vite.config.ts, so a drop fails here.
+      - name: Unit tests + coverage
+        run: npm run test:coverage
+
+      - name: Build
+        run: npm run build
+
+      # The E2E auth seam (src/auth.ts) must never reach production. Vite folds
+      # `import.meta.env.MODE !== 'e2e'` to a constant and drops the branch, but
+      # that is a guarantee worth enforcing rather than assuming: a bypass of
+      # sign-in shipping to production would be a serious defect.
+      - name: Assert the test auth seam is absent from the production bundle
+        run: |
+          if grep -rq "__durableOpsTestAuth" dist/; then
+            echo "::error::The E2E auth seam leaked into the production bundle"
+            exit 1
+          fi
+          echo "OK: no test auth seam in dist/"
+
+      # The bundle must stay small enough for a human to audit. A dependency
+      # that blows the budget should fail the PR, not be discovered later.
+      - name: Check bundle size (< 300 KB gzipped)
+        run: |
+          total=$(find dist/assets -type f \( -name '*.js' -o -name '*.css' \) \
+            -exec sh -c 'gzip -c "$1" | wc -c' _ {} \; | awk '{s+=$1} END {print s+0}')
+          limit=$((300 * 1024))
+          echo "Total gzipped: $((total / 1024)) KB (limit $((limit / 1024)) KB)"
+          if [ "$total" -gt "$limit" ]; then
+            echo "::error::Bundle is $((total / 1024)) KB gzipped, over the $((limit / 1024)) KB budget"
+            exit 1
+          fi
+
+  e2e:
+    name: E2E (deterministic)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      # MSAL and every Azure origin are stubbed, so this needs no tenant, no
+      # token and no network. CI must never need a credential to test the UI.
+      - name: Run Playwright
+        run: npm run test:e2e
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+  bicep:
+    name: Validate Bicep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Compiles every template and fails on any warning, so infra drift in the
+      # templates is caught without touching the subscription.
+      - name: Build Bicep
+        run: |
+          az bicep install
+          az bicep build --file infra/main.bicep --stdout > /dev/null
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: npm audit (fail on high+)
+        run: npm audit --audit-level=high
+
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high

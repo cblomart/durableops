@@ -1,0 +1,511 @@
+<script setup lang="ts">
+import { onMounted, onUnmounted, ref, watch } from 'vue';
+import TopBar from './components/TopBar.vue';
+import AppList from './components/AppList.vue';
+import InstanceList from './components/InstanceList.vue';
+import InstanceDetail from './components/InstanceDetail.vue';
+import { emptyFilters, type Filters } from './filters';
+import { getArmToken, getSignedInUser, signIn, signOut, type SignedInUser } from './auth';
+import {
+  cachedKeyCount,
+  checkOperabilityForApps,
+  classifyDurableApps,
+  clearKeyCache,
+  discoverFunctionApps,
+  getDurableSystemKey,
+  getTenantName,
+  type DurableKind,
+  type FunctionApp,
+  type Operability,
+} from './api/arm';
+import {
+  countFailedInstances,
+  getInstance,
+  listInstances,
+  purgeInstance,
+  raiseEvent,
+  restartInstance,
+  resumeInstance,
+  rewindInstance,
+  suspendInstance,
+  terminateInstance,
+  type DurableTarget,
+  type FailureCount,
+  type InstanceAction,
+  type InstanceDetail as Detail,
+  type OrchestrationInstance,
+} from './api/durable';
+import { describeError, err, isPimRecoverable, type ApiError, type Result } from './api/errors';
+import { useFavorites } from './favorites';
+
+const user = ref<SignedInUser | null>(getSignedInUser());
+const apps = ref<FunctionApp[]>([]);
+const loading = ref(false);
+const busy = ref(false);
+const error = ref<ApiError | null>(null);
+const keysInMemory = ref(0);
+
+/**
+ * App id -> durable classification, filled in progressively after discovery.
+ *
+ * Apps confirmed non-durable are hidden: an ops tool for Durable Functions has
+ * no business listing apps that run none. Classification reads function
+ * bindings from ARM and pulls no keys, so this costs no credentials.
+ */
+const durable = ref(new Map<string, DurableKind>());
+
+/**
+ * App id -> whether the user can actually operate it (holds `listkeys`).
+ *
+ * Discovery returns what the user can READ, which is not the same as what they
+ * can DO — Reader shows the whole tenant but cannot fetch a key. Listing apps
+ * the operator is powerless over is noise, so confirmed-unusable apps are hidden.
+ */
+const operable = ref(new Map<string, Operability>());
+const classifying = ref(false);
+
+/** A GUID means nothing to an operator; resolved to a display name once signed in. */
+const tenantName = ref(user.value?.tenantId ?? '');
+
+const { favorites } = useFavorites();
+
+/**
+ * Favourites failure scan: app id -> failed instance count.
+ *
+ * Scoped to favourites on purpose. Counting failures needs a per-app key and a
+ * webhook call; doing that fleet-wide would pull hundreds of keys just to draw a
+ * list. Favourites are the operator's own shortlist of suspects, so scanning
+ * them is both cheap and exactly what a 2 AM page wants: "which of my apps is on
+ * fire, before I even pick one".
+ */
+const failureScan = ref(new Map<string, FailureCount>());
+const scanning = ref(false);
+
+const selectedApp = ref<FunctionApp | null>(null);
+const target = ref<DurableTarget | null>(null);
+const instances = ref<OrchestrationInstance[]>([]);
+const continuationToken = ref<string | undefined>(undefined);
+const detail = ref<Detail | null>(null);
+
+const autoRefresh = ref(false);
+const refreshSeconds = ref(30);
+let refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+const filters = ref<Filters>(emptyFilters());
+
+/**
+ * Last-used filters per app, for this session only.
+ *
+ * In memory by design: filters can carry instance-id fragments, which are
+ * customer data. They die with the tab, like everything else here except
+ * favourite app names.
+ */
+const filtersByApp = new Map<string, Filters>();
+
+function setError(cause: unknown): void {
+  error.value = {
+    kind: 'auth',
+    message: cause instanceof Error ? cause.message : 'Something went wrong',
+  };
+}
+
+/**
+ * Work out what the operator can actually use, in the background.
+ *
+ * Operability first, then durability — and only for the apps that survive. An
+ * app the user cannot operate is hidden regardless of whether it is durable, so
+ * checking its bindings would be wasted calls against a fleet of hundreds.
+ *
+ * Deliberately fire-and-forget: the app list renders immediately and settles as
+ * results land. A classification failure must never block discovery.
+ */
+async function classify(token: string): Promise<void> {
+  classifying.value = true;
+  try {
+    await checkOperabilityForApps(apps.value, token, (id, kind) => {
+      operable.value = new Map(operable.value).set(id, kind);
+    });
+
+    const usable = apps.value.filter((app) => operable.value.get(app.id) !== 'no');
+    await classifyDurableApps(usable, token, (id, kind) => {
+      // Replace the Map so Vue sees the change; these are small maps.
+      durable.value = new Map(durable.value).set(id, kind);
+    });
+  } finally {
+    classifying.value = false;
+  }
+}
+
+/**
+ * Scan favourite apps for failures, so the operator can see which of their
+ * shortlisted apps is broken before opening any of them. Sequential and small:
+ * favourites are few, and one struggling app should not get a burst of calls.
+ */
+async function scanFavourites(): Promise<void> {
+  if (scanning.value) return;
+  const targets = apps.value.filter(
+    (app) =>
+      favorites.value.includes(app.name) &&
+      operable.value.get(app.id) !== 'no' &&
+      durable.value.get(app.id) !== 'no'
+  );
+  if (targets.length === 0) return;
+
+  scanning.value = true;
+  failureScan.value = new Map();
+  try {
+    const token = await getArmToken();
+    for (const app of targets) {
+      const key = await getDurableSystemKey(app, token);
+      keysInMemory.value = cachedKeyCount();
+      if (!key.ok) continue;
+      const scan = await countFailedInstances({
+        hostName: app.defaultHostName,
+        systemKey: key.value,
+      });
+      if (scan.ok) failureScan.value = new Map(failureScan.value).set(app.id, scan.value);
+    }
+  } catch (cause: unknown) {
+    setError(cause);
+  } finally {
+    scanning.value = false;
+  }
+}
+
+async function discover(forceRefresh = false): Promise<void> {
+  const signedIn = user.value;
+  if (signedIn === null) return;
+  loading.value = true;
+  error.value = null;
+  try {
+    const token = await getArmToken(forceRefresh);
+    // Cosmetic only: never let a failed name lookup block discovery.
+    void getTenantName(signedIn.tenantId, token).then((name) => {
+      tenantName.value = name;
+    });
+    const result = await discoverFunctionApps(token);
+    if (result.ok) {
+      apps.value = result.value;
+      durable.value = new Map();
+      operable.value = new Map();
+      void classify(token);
+    } else {
+      error.value = result.error;
+      apps.value = [];
+    }
+  } catch (cause: unknown) {
+    setError(cause);
+  } finally {
+    loading.value = false;
+    keysInMemory.value = cachedKeyCount();
+  }
+}
+
+/**
+ * The post-PIM-activation gesture.
+ *
+ * Order matters: drop cached keys and loaded data first, so a failure part-way
+ * through cannot leave stale, over-privileged state on screen. Then force a
+ * fresh ARM token (carrying newly activated role claims) and re-discover.
+ */
+async function refreshRights(): Promise<void> {
+  busy.value = true;
+  clearKeyCache();
+  keysInMemory.value = 0;
+  apps.value = [];
+  durable.value = new Map();
+  operable.value = new Map();
+  failureScan.value = new Map();
+  target.value = null;
+  instances.value = [];
+  detail.value = null;
+  try {
+    await discover(true);
+    if (selectedApp.value !== null) await openApp(selectedApp.value);
+  } finally {
+    busy.value = false;
+  }
+}
+
+/** Filters the runtime can apply server-side. Orchestrator name is not one of them. */
+function buildQuery(token?: string) {
+  const from = filters.value.createdFrom;
+  const to = filters.value.createdTo;
+  return {
+    ...(filters.value.statuses.length > 0 ? { runtimeStatus: filters.value.statuses } : {}),
+    ...(filters.value.instanceIdPrefix !== ''
+      ? { instanceIdPrefix: filters.value.instanceIdPrefix }
+      : {}),
+    ...(from !== '' ? { createdTimeFrom: new Date(from) } : {}),
+    ...(to !== '' ? { createdTimeTo: new Date(to) } : {}),
+    ...(token === undefined ? {} : { continuationToken: token }),
+    top: 100,
+  };
+}
+
+async function fetchInstances(append = false): Promise<void> {
+  if (target.value === null) return;
+  loading.value = true;
+  error.value = null;
+  try {
+    const result = await listInstances(
+      target.value,
+      buildQuery(append ? continuationToken.value : undefined)
+    );
+    if (!result.ok) {
+      error.value = result.error;
+      return;
+    }
+    instances.value = append
+      ? [...instances.value, ...result.value.instances]
+      : result.value.instances;
+    continuationToken.value = result.value.continuationToken;
+  } catch (cause: unknown) {
+    setError(cause);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function openApp(app: FunctionApp): Promise<void> {
+  selectedApp.value = app;
+  detail.value = null;
+  filters.value = filtersByApp.get(app.id) ?? emptyFilters();
+  instances.value = [];
+  continuationToken.value = undefined;
+  error.value = null;
+  loading.value = true;
+
+  try {
+    const token = await getArmToken();
+    // The system key is fetched only now — opening an app, not listing them.
+    const key = await getDurableSystemKey(app, token);
+    keysInMemory.value = cachedKeyCount();
+    if (!key.ok) {
+      error.value = key.error;
+      target.value = null;
+      return;
+    }
+    target.value = { hostName: app.defaultHostName, systemKey: key.value };
+    await fetchInstances();
+  } catch (cause: unknown) {
+    setError(cause);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function openInstance(instance: OrchestrationInstance): Promise<void> {
+  if (target.value === null) return;
+  loading.value = true;
+  error.value = null;
+  try {
+    const result = await getInstance(target.value, instance.instanceId);
+    if (result.ok) detail.value = result.value;
+    else error.value = result.error;
+  } catch (cause: unknown) {
+    setError(cause);
+  } finally {
+    loading.value = false;
+  }
+}
+
+/**
+ * Execute an instance action against the live app.
+ *
+ * The signed-in UPN is folded into the reason here (via each api function), so
+ * every reason-bearing action lands in the target app's telemetry as
+ * "DurableOps/{upn}: {reason}" — the who-and-why audit trail. Returns a typed
+ * Result so the dialog can report a failure without tearing down.
+ */
+async function runAction(
+  action: InstanceAction,
+  args: { reason?: string; eventName?: string; payload?: unknown }
+): Promise<Result<void>> {
+  const t = target.value;
+  const signedIn = user.value;
+  const id = detail.value?.instanceId;
+  if (t === null || signedIn === null || id === undefined) {
+    return err({ kind: 'auth', message: 'Not ready to act' });
+  }
+  const reason = args.reason ?? '';
+  const upn = signedIn.upn;
+
+  // A dispatch table rather than a switch: one entry per action, each a thunk.
+  const handlers: Record<InstanceAction, () => Promise<Result<void>>> = {
+    terminate: () => terminateInstance(t, id, upn, reason),
+    rewind: () => rewindInstance(t, id, upn, reason),
+    suspend: () => suspendInstance(t, id, upn, reason),
+    resume: () => resumeInstance(t, id, upn, reason),
+    restart: () => restartInstance(t, id, false),
+    purge: () => purgeInstance(t, id),
+    raiseEvent: () => raiseEvent(t, id, args.eventName ?? '', args.payload),
+  };
+  return handlers[action]();
+}
+
+/**
+ * After an action, confirm what actually happened.
+ *
+ * Purge destroys the instance, so there is nothing to re-read — go back to the
+ * list. For everything else, poll the instance once after 2s (the runtime
+ * applies most actions asynchronously) and show the new status.
+ */
+function onActionDone(action: InstanceAction): void {
+  if (action === 'purge') {
+    detail.value = null;
+    void fetchInstances();
+    return;
+  }
+  const current = detail.value;
+  if (current === null || target.value === null) return;
+  window.setTimeout(() => {
+    void getInstance(target.value as DurableTarget, current.instanceId).then((result) => {
+      if (result.ok) detail.value = result.value;
+    });
+  }, 2000);
+}
+
+function backToApps(): void {
+  selectedApp.value = null;
+  target.value = null;
+  instances.value = [];
+  detail.value = null;
+  error.value = null;
+}
+
+function onFilters(next: Filters): void {
+  filters.value = next;
+  if (selectedApp.value !== null) filtersByApp.set(selectedApp.value.id, next);
+}
+
+function stopTimer(): void {
+  if (refreshTimer !== null) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+}
+
+/**
+ * Auto-refresh is off by default and floored at 10s: it polls a live function
+ * app, and an ops tool must not be the reason an app gets throttled.
+ */
+function syncTimer(): void {
+  stopTimer();
+  if (!autoRefresh.value || target.value === null) return;
+  const seconds = Math.max(10, refreshSeconds.value);
+  refreshTimer = setInterval(() => {
+    // Never poll over an open detail view or a request already in flight.
+    if (detail.value === null && !loading.value) void fetchInstances();
+  }, seconds * 1000);
+}
+
+watch([autoRefresh, refreshSeconds, target], syncTimer);
+onUnmounted(stopTimer);
+
+onMounted(() => {
+  if (user.value !== null) void discover();
+});
+</script>
+
+<template>
+  <TopBar
+    :user="user"
+    :busy="busy"
+    :keys-in-memory="keysInMemory"
+    :tenant-name="tenantName"
+    @sign-in="signIn"
+    @sign-out="signOut"
+    @refresh-rights="refreshRights"
+  />
+
+  <main>
+    <p v-if="user === null" class="signin muted">Sign in with your Azure account to get started.</p>
+
+    <template v-else>
+      <div v-if="error" class="banner error err">
+        <div>{{ describeError(error) }}</div>
+        <button v-if="isPimRecoverable(error)" :disabled="busy" @click="refreshRights">
+          Refresh rights
+        </button>
+      </div>
+
+      <AppList
+        v-if="selectedApp === null"
+        :apps="apps"
+        :loading="loading"
+        :durable="durable"
+        :operable="operable"
+        :classifying="classifying"
+        :favorites="favorites"
+        :failure-scan="failureScan"
+        :scanning="scanning"
+        @select="openApp"
+        @scan="scanFavourites"
+      />
+
+      <InstanceDetail
+        v-else-if="detail !== null"
+        :detail="detail"
+        :app-name="selectedApp.name"
+        :runner="runAction"
+        @back="detail = null"
+        @action-done="onActionDone"
+      />
+
+      <template v-else>
+        <div class="crumbs">
+          <button class="back" @click="backToApps">← Apps</button>
+          <span class="appname">{{ selectedApp.name }}</span>
+          <span class="faint mono">{{ selectedApp.resourceGroup }}</span>
+        </div>
+
+        <InstanceList
+          v-if="target !== null"
+          :instances="instances"
+          :filters="filters"
+          :loading="loading"
+          :has-more="continuationToken !== undefined"
+          :auto-refresh="autoRefresh"
+          :refresh-seconds="refreshSeconds"
+          @update:filters="onFilters"
+          @update:auto-refresh="autoRefresh = $event"
+          @update:refresh-seconds="refreshSeconds = $event"
+          @apply="fetchInstances(false)"
+          @load-more="fetchInstances(true)"
+          @select="openInstance"
+        />
+      </template>
+    </template>
+  </main>
+</template>
+
+<style scoped>
+main {
+  padding-bottom: 24px;
+}
+
+.signin {
+  padding: 32px 16px;
+  max-width: 64ch;
+}
+
+.err {
+  margin: 12px 14px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px 0;
+}
+
+.appname {
+  font-weight: 600;
+}
+</style>

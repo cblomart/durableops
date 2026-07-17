@@ -1,0 +1,113 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+jobs:
+  infra:
+    name: Deploy infrastructure
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'dev' }}
+    permissions:
+      id-token: write # required for OIDC federated credentials
+      contents: read
+    outputs:
+      swaName: ${{ steps.deploy.outputs.swaName }}
+      hostname: ${{ steps.deploy.outputs.hostname }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # OIDC federated credentials: no long-lived cloud secret exists in this repo.
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Bicep
+        id: deploy
+        run: |
+          ENV="${{ inputs.environment || 'dev' }}"
+          out=$(az deployment sub create \
+            --name "durableops-${ENV}-${GITHUB_RUN_ID}" \
+            --location westeurope \
+            --template-file infra/main.bicep \
+            --parameters environment="$ENV" deployTestHarness=false \
+            --query properties.outputs -o json)
+          echo "swaName=$(echo "$out" | jq -r '.staticWebAppName.value')" >> "$GITHUB_OUTPUT"
+          echo "hostname=$(echo "$out" | jq -r '.staticWebAppHostname.value')" >> "$GITHUB_OUTPUT"
+
+  app:
+    name: Build and deploy SPA
+    runs-on: ubuntu-latest
+    needs: infra
+    environment: ${{ inputs.environment || 'dev' }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      # Runtime config is generated per environment at deploy time and never
+      # committed: one reviewed build artifact promotes across environments, and
+      # no tenant/client ID is baked into the bundle.
+      - name: Generate config.json
+        run: |
+          jq -n \
+            --arg tenantId "${{ secrets.AZURE_TENANT_ID }}" \
+            --arg clientId "${{ secrets.DURABLEOPS_SPA_CLIENT_ID }}" \
+            '{tenantId: $tenantId, clientId: $clientId}' > dist/config.json
+          # Fail loudly rather than shipping a config with empty GUIDs.
+          jq -e '.tenantId != "" and .clientId != ""' dist/config.json > /dev/null
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # The SWA deployment token is read at deploy time rather than stored as a
+      # repo secret, so it can be rotated in Azure without touching GitHub.
+      - name: Get SWA deployment token
+        id: token
+        run: |
+          token=$(az staticwebapp secrets list \
+            --name "${{ needs.infra.outputs.swaName }}" \
+            --resource-group "rg-durableops-${{ inputs.environment || 'dev' }}" \
+            --query "properties.apiKey" -o tsv)
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+
+      - uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ steps.token.outputs.token }}
+          action: upload
+          app_location: dist
+          skip_app_build: true
+          skip_api_build: true
+
+      - name: Report
+        run: echo "Deployed to https://${{ needs.infra.outputs.hostname }}"

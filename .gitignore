@@ -1,0 +1,27 @@
+node_modules/
+dist/
+coverage/
+*.local
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Runtime config is generated per environment at deploy time and must never be
+# committed: it pins tenant/client IDs to a specific Entra registration.
+/public/config.json
+
+# Local scratch
+*.log
+.env
+.env.*
+
+# test-harness build output
+test-harness/bin/
+test-harness/obj/
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/

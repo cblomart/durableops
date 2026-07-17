@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DurableOps</title>
+
+    <!--
+      Strict CSP. DurableOps talks to exactly three origins and nothing else:
+        - login.microsoftonline.com : Entra sign-in and token acquisition
+        - management.azure.com      : Resource Graph discovery + listkeys
+        - *.azurewebsites.net       : the durable webhook API on each function app
+
+      No inline scripts ('unsafe-inline' is absent from script-src by design, so
+      an injected <script> or event-handler attribute cannot execute). If a call
+      to any other origin ever appears, the browser blocks it — which is the
+      point: this tool has no business phoning anywhere else, and there is no
+      telemetry to exempt.
+
+      Note: connect-src is deliberately NOT 'self'-only — but it is also not '*'.
+      Custom-domain function apps or sovereign clouds need this list extended at
+      deploy time; see README "CSP and custom domains".
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="
+        default-src 'none';
+        script-src 'self';
+        style-src 'self';
+        img-src 'self' data:;
+        font-src 'self';
+        connect-src 'self' https://login.microsoftonline.com https://management.azure.com https://*.azurewebsites.net;
+        form-action 'self' https://login.microsoftonline.com;
+        base-uri 'none';
+        object-src 'none';
+      "
+    />
+    <!--
+      frame-ancestors is deliberately absent here: browsers ignore it when it
+      arrives via <meta>, so declaring it would be security theatre. It is
+      delivered as a real HTTP header instead — see staticwebapp.config.json.
+    -->
+    <meta name="referrer" content="no-referrer" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <noscript>DurableOps is a client-side app and requires JavaScript.</noscript>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

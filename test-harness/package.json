@@ -1,0 +1,12 @@
+{
+  "name": "durableops-test-harness",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Durable Functions app reproducing the failure taxonomy DurableOps must handle.",
+  "license": "MIT",
+  "main": "src/functions/*.js",
+  "dependencies": {
+    "@azure/functions": "^4.5.1",
+    "durable-functions": "^3.1.0"
+  }
+}

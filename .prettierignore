@@ -1,0 +1,6 @@
+dist
+coverage
+node_modules
+*.md
+test-harness/bin
+test-harness/obj

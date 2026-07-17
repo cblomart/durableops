@@ -1,0 +1,457 @@
+import { test, expect } from '@playwright/test';
+import {
+  stubAzure,
+  signInAs,
+  seedFavorites,
+  instance,
+  failureOutput,
+  STUCK_HISTORY,
+  APP_NAME,
+} from './fixtures';
+
+test.describe('signed out', () => {
+  test('shows a sign-in prompt and no app list', async ({ page }) => {
+    await stubAzure(page);
+    await page.goto('/');
+
+    await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible();
+    await expect(page.getByRole('table')).toHaveCount(0);
+  });
+});
+
+test.describe('discovery', () => {
+  test.beforeEach(async ({ page }) => {
+    await signInAs(page);
+    await stubAzure(page);
+  });
+
+  test('lists the apps Resource Graph returns, and shows the signed-in user', async ({ page }) => {
+    await page.goto('/');
+
+    await expect(page.getByRole('button', { name: 'Account: ops@contoso.com' })).toBeVisible();
+    await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Refresh rights' })).toBeVisible();
+  });
+
+  test('filters the app list client-side', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toBeVisible();
+
+    await page.getByRole('searchbox').fill('nonsense-xyz');
+    await expect(page.getByText(/No app matches/)).toBeVisible();
+
+    await page.getByRole('searchbox').fill('billing');
+    await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toBeVisible();
+  });
+});
+
+test.describe('triage and instance list', () => {
+  test.beforeEach(async ({ page }) => {
+    await signInAs(page);
+  });
+
+  test('groups instances by orchestrator and status, failures first', async ({ page }) => {
+    await stubAzure(page, {
+      instances: [
+        instance('i1', 'OrderSaga', 'Failed'),
+        instance('i2', 'OrderSaga', 'Failed'),
+        instance('i3', 'OrderSaga', 'Running'),
+        instance('i4', 'Shipping', 'Running'),
+      ],
+    });
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+
+    // The triage header is the ops landing view: it must lead with what broke.
+    const triage = page.locator('.triage');
+    await expect(triage).toBeVisible();
+    await expect(triage.getByRole('button', { name: /2 Failed/ })).toBeVisible();
+    await expect(triage.getByRole('button', { name: /1 Running/ }).first()).toBeVisible();
+  });
+
+  test('clicking a triage cell filters the list to that orchestrator and status', async ({
+    page,
+  }) => {
+    await stubAzure(page, {
+      instances: [instance('i1', 'OrderSaga', 'Failed'), instance('i2', 'Shipping', 'Running')],
+    });
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+
+    await page
+      .locator('.triage')
+      .getByRole('button', { name: /1 Failed/ })
+      .click();
+
+    await expect(page.locator('.idtext', { hasText: /^i1$/ })).toBeVisible();
+    await expect(page.locator('.idtext', { hasText: /^i2$/ })).toHaveCount(0);
+  });
+
+  /*
+   * The 2 AM signal: one bug vs many. Three failures sharing an error collapse to
+   * one Problems chip; a fourth with a different error is its own chip.
+   */
+  test('shows the error inline and groups failures by signature', async ({ page }) => {
+    await stubAzure(page, {
+      instances: [
+        instance('i1', 'OrderSaga', 'Failed', failureOutput('ChargeCard', 'Card declined')),
+        instance('i2', 'OrderSaga', 'Failed', failureOutput('ChargeCard', 'Card declined')),
+        instance('i3', 'OrderSaga', 'Failed', failureOutput('ChargeCard', 'Card declined')),
+        instance('i4', 'OrderSaga', 'Failed', failureOutput('CallBank', 'Gateway timeout')),
+        instance('i5', 'OrderSaga', 'Running'),
+      ],
+    });
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+
+    // Error shown inline in the row — no need to open the instance.
+    await expect(page.locator('.err').filter({ hasText: 'Card declined' }).first()).toBeVisible();
+
+    // Two distinct signatures, the common one counted 3.
+    const problems = page.locator('.problems');
+    await expect(problems.getByRole('button', { name: /3.*Card declined/ })).toBeVisible();
+    await expect(problems.getByRole('button', { name: /1.*Gateway timeout/ })).toBeVisible();
+
+    // Clicking a signature filters the list to just those instances.
+    await problems.getByRole('button', { name: /Gateway timeout/ }).click();
+    await expect(page.locator('.idtext', { hasText: /^i4$/ })).toBeVisible();
+    await expect(page.locator('.idtext', { hasText: /^i1$/ })).toHaveCount(0);
+  });
+
+  test('sorts failures above healthy instances', async ({ page }) => {
+    await stubAzure(page, {
+      instances: [
+        instance('healthy', 'OrderSaga', 'Running'),
+        instance('broken', 'OrderSaga', 'Failed', failureOutput('ChargeCard', 'boom')),
+      ],
+    });
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+
+    const firstRowId = page.locator('tbody tr').first().locator('.idtext');
+    await expect(firstRowId).toHaveText('broken');
+  });
+
+  test('copies an instance id to the clipboard', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await stubAzure(page, { instances: [instance('copy-me', 'OrderSaga', 'Running')] });
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+    await expect(page.locator('tbody tr').first()).toBeVisible();
+
+    // The copy button is revealed on hover; force past the opacity transition.
+    await page.getByRole('button', { name: 'Copy instance ID' }).click({ force: true });
+    const clip = await page.evaluate(() => navigator.clipboard.readText());
+    expect(clip).toBe('copy-me');
+  });
+
+  test('drives the list from the keyboard (j / k / enter)', async ({ page }) => {
+    await stubAzure(page, {
+      instances: [
+        instance('first', 'OrderSaga', 'Failed', failureOutput('A', 'x')),
+        instance('second', 'OrderSaga', 'Failed', failureOutput('B', 'y')),
+      ],
+    });
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+    // Wait for the rows (and the keydown listener) before driving from the keyboard.
+    await expect(page.locator('tbody tr').first()).toBeVisible();
+
+    // j selects the first row, j again the second, enter opens it.
+    await page.keyboard.press('j');
+    await expect(page.locator('tbody tr').first()).toHaveClass(/selected/);
+    await page.keyboard.press('j');
+    await expect(page.locator('tbody tr').nth(1)).toHaveClass(/selected/);
+    await page.keyboard.press('Enter');
+
+    // Opening navigates to the instance detail (back button appears).
+    await expect(page.getByRole('button', { name: '← Instances' })).toBeVisible();
+  });
+
+  test('"/" focuses the search field', async ({ page }) => {
+    await stubAzure(page, { instances: [instance('i1', 'OrderSaga', 'Running')] });
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+    await expect(page.locator('tbody tr').first()).toBeVisible();
+
+    await page.keyboard.press('/');
+    // The instance-id prefix field takes focus; typing there must not move rows.
+    const focusedPlaceholder = await page.evaluate(
+      () => (document.activeElement as HTMLInputElement | null)?.placeholder
+    );
+    expect(focusedPlaceholder).toContain('order-');
+  });
+});
+
+test.describe('instance detail', () => {
+  test.beforeEach(async ({ page }) => {
+    await signInAs(page);
+  });
+
+  test('leads with a failure summary and lets each event expand for detail', async ({ page }) => {
+    await stubAzure(page);
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+    await page.locator('.idtext', { hasText: /^abc123$/ }).click();
+
+    // The cause is surfaced immediately, with the failed function named — no
+    // scrolling, no "go to first failure".
+    const summary = page.locator('.summary');
+    await expect(summary).toContainText('Card declined by issuer');
+    await expect(summary).toContainText('in ChargeCard');
+    await expect(page.getByRole('button', { name: 'Go to first failure' })).toHaveCount(0);
+
+    // The stack is machine detail: hidden until asked for.
+    await expect(page.getByText(/System\.Exception/)).toHaveCount(0);
+    await summary.getByRole('button', { name: 'Show detail' }).click();
+    await expect(page.getByText(/System\.Exception/)).toBeVisible();
+
+    // Investigation: each history event expands to reveal its own payload.
+    const failedRow = page.locator('.row.failed');
+    await expect(failedRow.locator('.payload')).toHaveCount(0);
+    await failedRow.locator('.line').click();
+    await expect(failedRow.locator('.payload')).toBeVisible();
+  });
+
+  test('walks between failures and collapses to failures only', async ({ page }) => {
+    // Two failures (a retry), so prev/next navigation has somewhere to go.
+    await stubAzure(page, {
+      history: [
+        {
+          EventType: 'ExecutionStarted',
+          FunctionName: 'OrderSaga',
+          Timestamp: '2026-06-04T10:00:00Z',
+        },
+        { EventType: 'TaskScheduled', Name: 'ChargeCard', Timestamp: '2026-06-04T10:00:01Z' },
+        {
+          EventType: 'TaskFailed',
+          FunctionName: 'ChargeCard',
+          Reason: 'declined once',
+          Timestamp: '2026-06-04T10:00:02Z',
+        },
+        { EventType: 'TaskScheduled', Name: 'ChargeCard', Timestamp: '2026-06-04T10:00:03Z' },
+        {
+          EventType: 'TaskFailed',
+          FunctionName: 'ChargeCard',
+          Reason: 'declined again',
+          Timestamp: '2026-06-04T10:00:04Z',
+        },
+      ],
+    });
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+    await page.locator('.idtext', { hasText: /^abc123$/ }).click();
+
+    await expect(page.getByText('failure 1 / 2')).toBeVisible();
+    await page.getByRole('button', { name: 'Next failure' }).click();
+    await expect(page.getByText('failure 2 / 2')).toBeVisible();
+
+    await expect(page.locator('.row')).toHaveCount(5);
+    await page.getByLabel('Failures only').check();
+    // Two failures, each with one event of context, so fewer than the full five.
+    expect(await page.locator('.row').count()).toBeLessThan(5);
+  });
+
+  test('badges a live instance stuck at scheduling', async ({ page }) => {
+    await stubAzure(page, {
+      instances: [instance('abc123', 'StuckSaga', 'Running')],
+      history: STUCK_HISTORY,
+      detailStatus: 'Running',
+    });
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+    await page.locator('.idtext', { hasText: /^abc123$/ }).click();
+
+    // "Possibly", never a verdict: a slow activity looks identical from history.
+    await expect(page.getByText(/Possibly stuck at scheduling/)).toBeVisible();
+    await expect(page.getByText(/NeverReturns/).first()).toBeVisible();
+    // A running instance is not a failure, so no failure summary card.
+    await expect(page.locator('.summary')).toHaveCount(0);
+  });
+
+  test('does not badge or summarise a healthy completed instance', async ({ page }) => {
+    await stubAzure(page, {
+      instances: [instance('abc123', 'HappyPath', 'Completed')],
+      history: [
+        { EventType: 'ExecutionStarted', Timestamp: '2020-01-01T00:00:00Z' },
+        { EventType: 'ExecutionCompleted', Timestamp: '2020-01-01T00:00:02Z' },
+      ],
+      detailStatus: 'Completed',
+    });
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+    await page.locator('.idtext', { hasText: /^abc123$/ }).click();
+
+    await expect(page.getByText(/Possibly stuck/)).toHaveCount(0);
+    await expect(page.locator('.summary')).toHaveCount(0);
+    await expect(page.getByText(/failure \d+ \//)).toHaveCount(0);
+  });
+});
+
+test.describe('permissions', () => {
+  test('a 403 on listkeys offers the PIM remediation and a Refresh rights shortcut', async ({
+    page,
+  }) => {
+    await signInAs(page);
+    await stubAzure(page, { forbidKeys: true });
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+
+    await expect(page.getByText(/activate your PIM role/)).toBeVisible();
+    // Two: the top bar's and the error banner's shortcut.
+    await expect(page.getByRole('button', { name: 'Refresh rights' })).toHaveCount(2);
+  });
+});
+
+test.describe('durable-only app list', () => {
+  test.beforeEach(async ({ page }) => {
+    await signInAs(page);
+  });
+
+  /*
+   * An ops tool for Durable Functions has no business listing apps that run
+   * none. Classification reads ARM function bindings and pulls no keys.
+   */
+  test('hides an app that runs no Durable Functions, without explaining itself', async ({
+    page,
+  }) => {
+    await stubAzure(page, { bindings: ['httpTrigger', 'timerTrigger'] });
+    await page.goto('/');
+
+    await expect(page.getByText('No apps to show.')).toBeVisible();
+    await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toHaveCount(0);
+    // No counts and no lecture: that only invites questions from an operator.
+    await expect(page.getByText(/hidden/)).toHaveCount(0);
+    await expect(page.getByText(/non-durable/)).toHaveCount(0);
+  });
+
+  test('keeps an app that runs Durable Functions', async ({ page }) => {
+    await stubAzure(page, { bindings: ['orchestrationTrigger'] });
+    await page.goto('/');
+
+    await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toBeVisible();
+    await expect(page.getByText(/1 app/)).toBeVisible();
+  });
+
+  /* Unknown must never be treated as not-durable: that would hide real work. */
+  test('keeps an app it could not classify, listed plainly', async ({ page }) => {
+    await stubAzure(page, { forbidFunctions: true });
+    await page.goto('/');
+
+    await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toBeVisible();
+  });
+});
+
+test.describe('operability: only show what you can actually use', () => {
+  test.beforeEach(async ({ page }) => {
+    await signInAs(page);
+  });
+
+  /*
+   * The exact confusion this filter removes: Reader can SEE every app in the
+   * tenant but cannot fetch a key, so it can operate none of them. Listing them
+   * would just be noise with a 403 waiting behind every click.
+   */
+  test('hides apps the user cannot operate, and stays calm about it', async ({ page }) => {
+    await stubAzure(page, { actions: ['*/read'] });
+    await page.goto('/');
+
+    await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toHaveCount(0);
+    await expect(page.getByText('No apps to show.')).toBeVisible();
+    // The operator is never told anything was filtered, that access is missing,
+    // or that reading and managing differ: that only worries them. The neutral
+    // recovery (Refresh rights) lives in the top bar, not here.
+    await expect(page.getByText(/hidden/i)).toHaveCount(0);
+    await expect(page.getByText(/permission/i)).toHaveCount(0);
+    await expect(page.getByText(/cannot operate/i)).toHaveCount(0);
+    await expect(page.getByText(/activate/i)).toHaveCount(0);
+    await expect(page.getByRole('link', { name: /Activate access/ })).toHaveCount(0);
+  });
+
+  test('shows apps once the user holds listkeys', async ({ page }) => {
+    await stubAzure(page, { actions: ['Microsoft.Web/sites/*'] });
+    await page.goto('/');
+
+    await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toBeVisible();
+  });
+});
+
+test.describe('favourites failure scan', () => {
+  test.beforeEach(async ({ page }) => {
+    await signInAs(page);
+  });
+
+  /*
+   * The operator's 2 AM shortcut: check my starred apps for failures before
+   * opening any. The scan is scoped to favourites because counting failures
+   * pulls a per-app key.
+   */
+  test('scans favourites and badges the ones with failures', async ({ page }) => {
+    await seedFavorites(page, [APP_NAME]);
+    await stubAzure(page, {
+      instances: [
+        instance('f1', 'OrderSaga', 'Failed', failureOutput('ChargeCard', 'boom')),
+        instance('f2', 'OrderSaga', 'Failed', failureOutput('ChargeCard', 'boom')),
+      ],
+    });
+    await page.goto('/');
+    // The app must be listed (durable + operable) before we can scan it.
+    await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toBeVisible();
+
+    await page.getByRole('button', { name: /Scan favourites/ }).click();
+
+    // The favourite is badged with its failure count.
+    await expect(page.locator('.failbadge')).toHaveText(/2 failed/);
+  });
+
+  test('offers no scan when nothing is favourited', async ({ page }) => {
+    await stubAzure(page);
+    await page.goto('/');
+    await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toBeVisible();
+
+    await expect(page.getByRole('button', { name: /Scan favourites/ })).toHaveCount(0);
+  });
+});
+
+test.describe('account menu', () => {
+  test('signed out shows a sign-in pill and no avatar', async ({ page }) => {
+    await stubAzure(page);
+    await page.goto('/');
+
+    await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Account:/ })).toHaveCount(0);
+  });
+
+  /* A tenant GUID means nothing to an operator; the flyout shows the name. */
+  test('avatar opens a flyout with the UPN and tenant NAME, not a GUID', async ({ page }) => {
+    await signInAs(page);
+    await stubAzure(page);
+    await page.goto('/');
+
+    // Initials, not a sign-out button, in the bar.
+    const avatar = page.getByRole('button', { name: 'Account: ops@contoso.com' });
+    await expect(avatar).toBeVisible();
+    await expect(avatar).toHaveText('O');
+    await expect(page.getByRole('button', { name: 'Sign out' })).toHaveCount(0);
+
+    await avatar.click();
+
+    await expect(page.getByRole('menu')).toBeVisible();
+    await expect(page.getByRole('menu').getByText('Contoso', { exact: true })).toBeVisible();
+    await expect(page.getByText('tenant-id')).toHaveCount(0);
+    await expect(page.getByRole('menuitem', { name: 'Sign out' })).toBeVisible();
+  });
+
+  test('flyout closes on Escape', async ({ page }) => {
+    await signInAs(page);
+    await stubAzure(page);
+    await page.goto('/');
+
+    await page.getByRole('button', { name: 'Account: ops@contoso.com' }).click();
+    await expect(page.getByRole('menu')).toBeVisible();
+
+    await page.keyboard.press('Escape');
+
+    await expect(page.getByRole('menu')).toHaveCount(0);
+  });
+});
