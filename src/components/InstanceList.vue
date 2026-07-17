@@ -272,14 +272,27 @@ onBeforeUnmount(() => {
     </p>
 
     <template v-else>
+      <!--
+        table-layout: fixed with an explicit colgroup so the columns stay aligned
+        regardless of content length. Cells that hold a copy button use an inner
+        flex wrapper (.cell) — putting display:flex on the <td> itself removes it
+        from the table's column sizing and is what broke the alignment before.
+      -->
       <table class="grid">
+        <colgroup>
+          <col class="col-id" />
+          <col class="col-orch" />
+          <col class="col-status" />
+          <col class="col-error" />
+          <col class="col-created" />
+        </colgroup>
         <thead>
           <tr>
             <th>Instance ID</th>
             <th>Orchestrator</th>
             <th>Status</th>
             <th>Error</th>
-            <th>Created</th>
+            <th class="right">Created</th>
           </tr>
         </thead>
         <tbody ref="rowsBody">
@@ -291,9 +304,11 @@ onBeforeUnmount(() => {
             :class="{ problem: isProblem(instance), selected: idx === selected }"
             @click="emit('select', instance)"
           >
-            <td class="mono id">
-              <span class="idtext">{{ instance.instanceId }}</span>
-              <CopyButton :value="instance.instanceId" label="Copy instance ID" />
+            <td>
+              <div class="cell">
+                <span class="idtext mono">{{ instance.instanceId }}</span>
+                <CopyButton :value="instance.instanceId" label="Copy instance ID" />
+              </div>
             </td>
             <td>{{ instance.name || '—' }}</td>
             <td>
@@ -307,17 +322,19 @@ onBeforeUnmount(() => {
               the full text on hover; the row click opens the full investigation.
             -->
             <td class="err">
-              <span class="errtext" :title="instanceErrorSignature(instance)">{{
-                instanceErrorSignature(instance)
-              }}</span>
-              <CopyButton
-                v-if="instanceErrorSignature(instance) !== ''"
-                :value="instanceErrorSignature(instance)"
-                label="Copy error"
-              />
+              <div class="cell">
+                <span class="errtext" :title="instanceErrorSignature(instance)">{{
+                  instanceErrorSignature(instance)
+                }}</span>
+                <CopyButton
+                  v-if="instanceErrorSignature(instance) !== ''"
+                  :value="instanceErrorSignature(instance)"
+                  label="Copy error"
+                />
+              </div>
             </td>
             <!-- Relative age for fast "when did this start" anchoring; exact time on hover. -->
-            <td class="faint nowrap" :title="instance.createdTime">
+            <td class="right faint" :title="instance.createdTime">
               {{ relativeTime(instance.createdTime) }}
             </td>
           </tr>
@@ -334,7 +351,10 @@ onBeforeUnmount(() => {
           {{ loading ? 'Loading…' : 'Load more' }}
         </button>
         <span class="spacer" />
-        <span class="kbd faint">j / k move · enter open · / search</span>
+        <!-- Keyboard shortcuts, spelled out with arrows so the hint needs no decoding. -->
+        <span class="kbd faint" title="Keyboard shortcuts for this list">
+          <kbd>↑</kbd><kbd>↓</kbd> move · <kbd>Enter</kbd> open · <kbd>/</kbd> search
+        </span>
       </div>
     </template>
   </section>
@@ -471,6 +491,26 @@ input[type='number'] {
 .grid {
   width: 100%;
   border-collapse: collapse;
+  /* Fixed layout: columns take the colgroup widths, not their content, so the
+     header and every row line up no matter how long an id or error is. */
+  table-layout: fixed;
+}
+
+/* Column widths. The Error column is left unset so it absorbs the slack. */
+.col-id {
+  width: 34ch;
+}
+
+.col-orch {
+  width: 22%;
+}
+
+.col-status {
+  width: 108px;
+}
+
+.col-created {
+  width: 76px;
 }
 
 .grid th {
@@ -487,6 +527,15 @@ input[type='number'] {
 .grid td {
   padding: 4px 8px;
   border-bottom: 1px solid var(--border);
+  /* Every cell clips rather than pushing the column wider. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.right {
+  text-align: right;
 }
 
 .row {
@@ -497,31 +546,30 @@ input[type='number'] {
   background: var(--bg-hover);
 }
 
-.id {
-  max-width: 280px;
-}
-
-.id,
-.err {
+/* Inner flex wrapper for cells that pair text with a copy button. */
+.cell {
   display: flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
 }
 
 .idtext,
 .errtext {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .err {
-  max-width: 380px;
   color: var(--danger);
 }
 
 /* The copy button only appears on hover/selection, to keep dense rows clean. */
 .copybtn {
+  flex: 0 0 auto;
   opacity: 0;
 }
 
@@ -529,10 +577,6 @@ input[type='number'] {
 .row.selected .copybtn,
 .copybtn:focus-visible {
   opacity: 1;
-}
-
-.nowrap {
-  white-space: nowrap;
 }
 
 .row.problem {
@@ -591,5 +635,20 @@ input[type='number'] {
 
 .kbd {
   font-size: 11px;
+  white-space: nowrap;
+}
+
+.kbd kbd {
+  display: inline-block;
+  min-width: 14px;
+  padding: 0 4px;
+  margin: 0 1px;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  text-align: center;
+  color: var(--text-dim);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
 }
 </style>
