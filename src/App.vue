@@ -72,14 +72,12 @@ const tenantName = ref(user.value?.tenantId ?? '');
  * Counting failures needs a per-app key and a webhook call, so scanning the
  * whole fleet at once would pull hundreds of keys just to draw a list. Instead
  * the app list scans only the rows scrolled into view (see AppList's intersection
- * observer), through a bounded queue here — so at small scale everything gets a
- * badge, and at fleet scale only what the operator actually looks at is scanned.
- *
- * Off by default: enabling it is the operator opting in to pulling keys for the
- * apps they browse.
+ * observer), through the bounded queue below — so at small scale everything gets
+ * a count, and at fleet scale only the apps the operator actually looks at are
+ * scanned (and only they have a key pulled). Failures are first-class here, so
+ * this runs automatically; the bounded queue keeps it from storming any app.
  */
 const failureScan = ref(new Map<string, FailureCount>());
-const autoScan = ref(false);
 const scanning = ref(false);
 
 /** Hits app runtimes, not ARM — keep it modest so a scan never storms an app. */
@@ -87,9 +85,8 @@ const SCAN_CONCURRENCY = 4;
 const scanQueue: FunctionApp[] = [];
 const scanInFlight = new Set<string>();
 
-/** Queue an app for scanning (deduped), if scanning is on and the app is usable. */
+/** Queue a usable app for scanning, deduped against what is already done or in flight. */
 function enqueueScan(app: FunctionApp): void {
-  if (!autoScan.value) return;
   if (failureScan.value.has(app.id) || scanInFlight.has(app.id)) return;
   if (operable.value.get(app.id) === 'no' || durable.value.get(app.id) === 'no') return;
   if (scanQueue.some((queued) => queued.id === app.id)) return;
@@ -114,7 +111,7 @@ async function scanOne(app: FunctionApp): Promise<void> {
 }
 
 function pumpScanQueue(): void {
-  while (autoScan.value && scanInFlight.size < SCAN_CONCURRENCY && scanQueue.length > 0) {
+  while (scanInFlight.size < SCAN_CONCURRENCY && scanQueue.length > 0) {
     const app = scanQueue.shift();
     if (app === undefined) break;
     scanInFlight.add(app.id);
@@ -126,11 +123,6 @@ function pumpScanQueue(): void {
     });
   }
 }
-
-// Turning the scan off drops the pending queue; in-flight scans finish on their own.
-watch(autoScan, (on) => {
-  if (!on) scanQueue.length = 0;
-});
 
 const selectedApp = ref<FunctionApp | null>(null);
 const target = ref<DurableTarget | null>(null);
@@ -456,9 +448,7 @@ onMounted(() => {
         :classifying="classifying"
         :failure-scan="failureScan"
         :scanning="scanning"
-        :auto-scan="autoScan"
         @select="openApp"
-        @update:auto-scan="autoScan = $event"
         @scan="enqueueScan"
       />
 

@@ -17,13 +17,10 @@ const props = defineProps<{
   failureScan: Map<string, FailureCount>;
   /** True while any opportunistic scan is in flight. */
   scanning: boolean;
-  /** Whether opportunistic (viewport) failure scanning is enabled. */
-  autoScan: boolean;
 }>();
 
 const emit = defineEmits<{
   select: [app: FunctionApp];
-  'update:autoScan': [value: boolean];
   /** Emitted when a row scrolls into view and should be scanned. */
   scan: [app: FunctionApp];
 }>();
@@ -97,7 +94,6 @@ const bodyRef = useTemplateRef<HTMLElement>('body');
 let observer: IntersectionObserver | null = null;
 
 function onIntersect(entries: IntersectionObserverEntry[]): void {
-  if (!props.autoScan) return;
   for (const entry of entries) {
     if (!entry.isIntersecting) continue;
     const id = (entry.target as HTMLElement).dataset['appId'];
@@ -122,9 +118,11 @@ onMounted(() => {
 
 onBeforeUnmount(() => observer?.disconnect());
 
-// Re-observe after the row set changes, and when scanning is switched on (so
-// rows already on screen are picked up immediately).
-watch([visible, () => props.autoScan], () => void nextTick(observeRows));
+// Re-observe whenever the row set changes (search, sort, discovery) OR when the
+// table first appears — the table is only rendered once loading/classifying
+// finishes, and that transition does not change `visible`, so it must be watched
+// explicitly or the observer would never attach to the initial rows.
+watch([visible, () => props.loading, () => props.classifying], () => void nextTick(observeRows));
 </script>
 
 <template>
@@ -142,23 +140,11 @@ watch([visible, () => props.autoScan], () => void nextTick(observeRows));
         <template v-if="classifying"> · loading…</template>
       </span>
 
-      <div class="tspacer" />
-
       <!--
-        Opportunistic failure scan. When on, each app is checked for failures as
-        it scrolls into view (throttled, bounded) — so at small scale every app
-        gets a badge and at fleet scale only what you look at is scanned. Off by
-        default: enabling it opts into pulling a key for the apps you browse.
+        Failures are checked automatically as rows scroll into view (bounded
+        queue in the parent). This is just a quiet activity hint while that runs.
       -->
-      <label class="scan-toggle" title="Check apps for failures as they scroll into view">
-        <input
-          type="checkbox"
-          :checked="autoScan"
-          @change="emit('update:autoScan', ($event.target as HTMLInputElement).checked)"
-        />
-        Scan for failures
-      </label>
-      <span v-if="scanning" class="faint scanning">scanning…</span>
+      <span v-if="scanning" class="faint scanning">checking for failures…</span>
     </div>
 
     <p v-if="loading || classifying" class="state muted">Loading apps…</p>
@@ -179,6 +165,7 @@ watch([visible, () => props.autoScan], () => void nextTick(observeRows));
         <tr>
           <th class="star" aria-label="Favourite"></th>
           <th>Name</th>
+          <th>Health</th>
           <th>Resource group</th>
           <th>Region</th>
           <th>State</th>
@@ -190,6 +177,7 @@ watch([visible, () => props.autoScan], () => void nextTick(observeRows));
           :key="app.id"
           :data-app-id="app.id"
           class="row"
+          :class="{ problem: (failuresOf(app)?.count ?? 0) > 0 }"
           @click="$emit('select', app)"
         >
           <td class="star">
@@ -211,21 +199,28 @@ watch([visible, () => props.autoScan], () => void nextTick(observeRows));
             dropped, but it carries no explanation the operator would have to
             decode. If it turns out not to be durable, opening it says so.
           -->
-          <td class="name">
-            {{ app.name }}
-            <!-- Scan result: a red count when this favourite has failures, a quiet tick when clean. -->
+          <td class="name">{{ app.name }}</td>
+          <!--
+            Failures are first-class on an ops tool, so they get their own column
+            plus a row-level treatment (tint + red edge, matching the instance
+            list) — a bold, plainly-worded count, never a decorative pill. A
+            scanned clean app shows a quiet tick; an unscanned one shows nothing.
+            Kept out of the Name cell so the app's name stays its own identity.
+          -->
+          <td class="health">
             <span
               v-if="failuresOf(app) && failuresOf(app)!.count > 0"
-              class="failbadge"
+              class="failcount"
               :title="`${failuresOf(app)!.count}${failuresOf(app)!.more ? '+' : ''} failed or terminated instance(s)`"
             >
+              <span class="fdot" aria-hidden="true"></span>
               {{ failuresOf(app)!.count }}{{ failuresOf(app)!.more ? '+' : '' }} failed
             </span>
             <span
               v-else-if="failuresOf(app)"
-              class="cleanbadge"
-              title="No failures found in the latest scan"
-              >✓</span
+              class="clean"
+              title="No failed or terminated instances found"
+              >✓ healthy</span
             >
           </td>
           <td class="muted">{{ app.resourceGroup }}</td>
@@ -313,22 +308,43 @@ watch([visible, () => props.autoScan], () => void nextTick(observeRows));
   background: var(--bg-hover);
 }
 
+/* A failing app is a first-class concern: the whole row reads as "attention
+   needed", matching how failed instances look, so it can never be overlooked. */
+.row.problem {
+  background: color-mix(in srgb, var(--danger) 5%, transparent);
+}
+
+.row.problem:hover {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.row.problem > td:first-child {
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+
 .name {
   font-weight: 500;
 }
 
-.failbadge {
-  margin-left: 8px;
-  padding: 0 6px;
-  border-radius: 10px;
-  font-size: 11px;
+.failcount {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 10px;
+  color: var(--danger);
   font-weight: 600;
-  color: #fff;
+  font-size: 12px;
+}
+
+.fdot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
   background: var(--danger);
 }
 
-.cleanbadge {
-  margin-left: 8px;
+.clean {
+  margin-left: 10px;
   font-size: 11px;
   color: var(--ok);
 }

@@ -407,11 +407,11 @@ test.describe('opportunistic failure scan', () => {
   });
 
   /*
-   * Enabling the scan checks each app for failures as it scrolls into view. With
-   * one app on screen it scans immediately and badges the failure count — the
-   * throttle only matters at fleet scale, where off-screen apps are left alone.
+   * Apps are scanned automatically as their rows scroll into view (bounded
+   * queue). A failing app is treated first-class: the whole row reads as a
+   * problem, with a plain, prominent count — not a decorative pill.
    */
-  test('badges an app with its failure count once scanning is enabled', async ({ page }) => {
+  test('marks a failing app as a problem row with a clear count', async ({ page }) => {
     await stubAzure(page, {
       instances: [
         instance('f1', 'OrderSaga', 'Failed', failureOutput('ChargeCard', 'boom')),
@@ -421,25 +421,19 @@ test.describe('opportunistic failure scan', () => {
     await page.goto('/');
     await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toBeVisible();
 
-    // No scanning, no badge, until the operator opts in (it pulls a key per app).
-    await expect(page.locator('.failbadge')).toHaveCount(0);
-
-    await page.getByLabel('Scan for failures').check();
-
-    // The on-screen app is scanned and badged with its failure count.
-    await expect(page.locator('.failbadge')).toHaveText(/2 failed/);
+    // Scanned on sight — the count appears and the row is a problem.
+    await expect(page.locator('.failcount')).toHaveText(/2 failed/);
+    await expect(page.locator('tbody tr').first()).toHaveClass(/problem/);
   });
 
-  test('does not scan until enabled', async ({ page }) => {
-    await stubAzure(page, {
-      instances: [instance('f1', 'OrderSaga', 'Failed', failureOutput('ChargeCard', 'boom'))],
-    });
+  test('marks a scanned app with no failures as healthy, not a problem', async ({ page }) => {
+    // On the app-list page the only instances query is the scan's failed-count.
+    await stubAzure(page, { instances: [] });
     await page.goto('/');
     await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toBeVisible();
 
-    // The toggle is offered, but off — no badge and no failure count fetched.
-    await expect(page.getByLabel('Scan for failures')).not.toBeChecked();
-    await expect(page.locator('.failbadge')).toHaveCount(0);
+    await expect(page.locator('.clean')).toContainText('healthy');
+    await expect(page.locator('tbody tr').first()).not.toHaveClass(/problem/);
   });
 });
 
