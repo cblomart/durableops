@@ -10,7 +10,7 @@ async function openInstance(page: Page, status: string) {
   await page.goto('/');
   await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
   await page.locator('.idtext', { hasText: /^abc123$/ }).click();
-  await expect(page.getByRole('button', { name: '← Instances' })).toBeVisible();
+  await expect(page.locator('.title .id')).toBeVisible();
 }
 
 test.describe('M3 actions', () => {
@@ -32,6 +32,36 @@ test.describe('M3 actions', () => {
     await expect(bar.getByRole('button', { name: 'Restart' })).toBeVisible();
     await expect(bar.getByRole('button', { name: 'Purge' })).toBeVisible();
     await expect(bar.getByRole('button', { name: 'Terminate' })).toHaveCount(0);
+  });
+
+  /*
+   * Colour charter: red is reserved for the one irreversible action so it keeps
+   * its meaning. Recovery actions must not look dangerous.
+   */
+  test('only the irreversible action is styled dangerous', async ({ page }) => {
+    await openInstance(page, 'Failed');
+    const bar = page.locator('.actionbar');
+    await expect(bar.getByRole('button', { name: 'Purge' })).toHaveClass(/danger/);
+    await expect(bar.getByRole('button', { name: 'Rewind' })).not.toHaveClass(/danger/);
+    await expect(bar.getByRole('button', { name: 'Restart' })).not.toHaveClass(/danger/);
+  });
+
+  test('breadcrumb lets the operator step back to the app or the app list', async ({ page }) => {
+    await openInstance(page, 'Failed');
+    // Broad-to-specific breadcrumb, so location is never in doubt.
+    const crumbs = page.locator('.crumbs');
+    await expect(crumbs.getByRole('button', { name: 'Apps' })).toBeVisible();
+    await expect(crumbs.getByRole('button', { name: APP_NAME })).toBeVisible();
+
+    // App name → back to this app's instance list.
+    await crumbs.getByRole('button', { name: APP_NAME }).click();
+    await expect(page.getByRole('table')).toBeVisible();
+
+    // Open again, then Apps → back to the app list.
+    await page.locator('.idtext', { hasText: /^abc123$/ }).click();
+    await expect(page.locator('.title .id')).toBeVisible();
+    await page.locator('.crumbs').getByRole('button', { name: 'Apps' }).click();
+    await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toBeVisible();
   });
 
   /*

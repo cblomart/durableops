@@ -91,7 +91,7 @@ async function run(args: {
       v-for="action in actions"
       :key="action"
       class="act"
-      :class="{ danger: ACTION_META[action].destructive }"
+      :class="ACTION_META[action].tone"
       @click="open(action)"
     >
       {{ ACTION_META[action].label }}
@@ -110,7 +110,7 @@ async function run(args: {
       :title="`${meta.label} instance`"
       :description="description"
       :confirm-label="meta.label"
-      :danger="meta.destructive"
+      :danger="meta.tone === 'danger'"
       :forwards-reason="meta.forwardsReason"
       :busy="busy"
       @cancel="close"
@@ -129,6 +129,9 @@ async function run(args: {
   margin: 4px 0 12px;
 }
 
+/* Colour charter: red is reserved for the one irreversible action (purge),
+   amber for the disruptive-but-recoverable one (terminate); recovery actions
+   keep the neutral button styling so the page is not a wall of red. */
 .act.danger {
   border-color: var(--danger);
   color: var(--danger);
@@ -136,6 +139,15 @@ async function run(args: {
 
 .act.danger:hover:not(:disabled) {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.act.warn {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.act.warn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .failure {

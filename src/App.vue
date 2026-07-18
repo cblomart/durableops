@@ -450,15 +450,17 @@ onMounted(() => {
         :app-name="selectedApp.name"
         :runner="runAction"
         @back="detail = null"
+        @home="backToApps"
         @action-done="onActionDone"
       />
 
       <template v-else>
-        <div class="crumbs">
-          <button class="back" @click="backToApps">← Apps</button>
-          <span class="appname">{{ selectedApp.name }}</span>
-          <span class="faint mono">{{ selectedApp.resourceGroup }}</span>
-        </div>
+        <nav class="crumbs" aria-label="Breadcrumb">
+          <button class="crumb link" @click="backToApps">Apps</button>
+          <span class="sep" aria-hidden="true">›</span>
+          <span class="crumb current">{{ selectedApp.name }}</span>
+          <span class="faint rg mono">{{ selectedApp.resourceGroup }}</span>
+        </nav>
 
         <InstanceList
           v-if="target !== null"
@@ -501,11 +503,37 @@ main {
 .crumbs {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 14px 0;
+  gap: 6px;
+  padding: 10px 14px 0;
+  font-size: 13px;
 }
 
-.appname {
+.crumb {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+}
+
+.crumb.link {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.crumb.link:hover {
+  text-decoration: underline;
+}
+
+.crumb.current {
   font-weight: 600;
+}
+
+.sep {
+  color: var(--text-faint);
+}
+
+.rg {
+  font-size: 11px;
 }
 </style>

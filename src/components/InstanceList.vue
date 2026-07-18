@@ -570,18 +570,6 @@ input[type='number'] {
   color: var(--danger);
 }
 
-/* The copy button only appears on hover/selection, to keep dense rows clean. */
-.copybtn {
-  flex: 0 0 auto;
-  opacity: 0;
-}
-
-.row:hover .copybtn,
-.row.selected .copybtn,
-.copybtn:focus-visible {
-  opacity: 1;
-}
-
 .row.problem {
   background: color-mix(in srgb, var(--danger) 4%, transparent);
 }

@@ -165,7 +165,7 @@ test.describe('triage and instance list', () => {
     await page.keyboard.press('Enter');
 
     // Opening navigates to the instance detail (back button appears).
-    await expect(page.getByRole('button', { name: '← Instances' })).toBeVisible();
+    await expect(page.locator('.title .id')).toBeVisible();
   });
 
   test('"/" focuses the search field', async ({ page }) => {

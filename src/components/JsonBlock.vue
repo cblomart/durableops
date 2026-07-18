@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import CopyButton from './CopyButton.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -44,6 +45,8 @@ const show = computed(() => !isLarge.value || expanded.value);
       <button v-else-if="isLarge" class="toggle" @click="expanded = !expanded">
         {{ expanded ? 'Collapse' : `Expand (${pretty.length.toLocaleString()} chars)` }}
       </button>
+      <!-- Copy the payload, the way a markdown renderer offers on a code block. -->
+      <CopyButton v-if="!isEmpty" :value="pretty" :label="`Copy ${label.toLowerCase()}`" />
     </header>
     <pre v-if="!isEmpty && show" class="mono">{{ pretty }}</pre>
   </section>

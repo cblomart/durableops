@@ -647,10 +647,13 @@ describe('ACTION_META', () => {
     expect(forwards).toEqual(['resume', 'rewind', 'suspend', 'terminate']);
   });
 
-  it('marks the irreversible actions destructive', () => {
-    expect(ACTION_META.purge.destructive).toBe(true);
-    expect(ACTION_META.terminate.destructive).toBe(true);
-    expect(ACTION_META.suspend.destructive).toBe(false);
-    expect(ACTION_META.resume.destructive).toBe(false);
+  it('reserves the danger tone for the one irreversible action', () => {
+    // Red keeps its meaning: only purge (irreversible) is danger; terminate is a
+    // recoverable-but-disruptive warn; recovery actions are neutral.
+    expect(ACTION_META.purge.tone).toBe('danger');
+    expect(ACTION_META.terminate.tone).toBe('warn');
+    expect(ACTION_META.rewind.tone).toBe('normal');
+    expect(ACTION_META.restart.tone).toBe('normal');
+    expect(ACTION_META.resume.tone).toBe('normal');
   });
 });

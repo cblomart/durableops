@@ -7,6 +7,7 @@ import JsonBlock from './JsonBlock.vue';
 import HistoryTimeline from './HistoryTimeline.vue';
 import FailureSummary from './FailureSummary.vue';
 import ActionBar from './ActionBar.vue';
+import CopyButton from './CopyButton.vue';
 
 const props = defineProps<{
   detail: InstanceDetail;
@@ -17,7 +18,7 @@ const props = defineProps<{
   ) => Promise<Result<void>>;
 }>();
 
-defineEmits<{ back: []; actionDone: [action: InstanceAction] }>();
+defineEmits<{ back: []; home: []; actionDone: [action: InstanceAction] }>();
 
 const stuck = computed(() => detectStuck(props.detail.historyEvents, props.detail.runtimeStatus));
 
@@ -30,13 +31,27 @@ const isProblem = computed(
 <template>
   <section class="detail">
     <header class="head">
-      <button class="back" @click="$emit('back')">← Instances</button>
-      <span class="id mono">{{ detail.instanceId }}</span>
-      <span class="badge" :class="detail.runtimeStatus.toLowerCase()">{{
-        detail.runtimeStatus
-      }}</span>
-      <span v-if="detail.name" class="orch">{{ detail.name }}</span>
-      <span class="faint app">on {{ appName }}</span>
+      <!--
+        A real breadcrumb, broad to specific, so an operator always knows where
+        they are: which app, which orchestrator, which instance. App and app name
+        are clickable to step back up; the instance is the current location.
+      -->
+      <nav class="crumbs" aria-label="Breadcrumb">
+        <button class="crumb link" @click="$emit('home')">Apps</button>
+        <span class="sep" aria-hidden="true">›</span>
+        <button class="crumb link" @click="$emit('back')">{{ appName }}</button>
+        <span class="sep" aria-hidden="true">›</span>
+        <span class="crumb">{{ detail.name || '(unnamed orchestrator)' }}</span>
+      </nav>
+
+      <div class="title">
+        <span class="badge" :class="detail.runtimeStatus.toLowerCase()">
+          {{ detail.runtimeStatus }}
+        </span>
+        <span class="idlabel faint">instance</span>
+        <span class="id mono">{{ detail.instanceId }}</span>
+        <CopyButton :value="detail.instanceId" label="Copy instance ID" />
+      </div>
     </header>
 
     <!-- Remediation, right under the header: see the error, then act on it. -->
@@ -101,23 +116,54 @@ const isProblem = computed(
 }
 
 .head {
+  margin-bottom: 12px;
+}
+
+.crumbs {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   flex-wrap: wrap;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.crumb {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+}
+
+.crumb.link {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.crumb.link:hover {
+  text-decoration: underline;
+}
+
+.sep {
+  color: var(--text-faint);
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.idlabel {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
 }
 
 .id {
   font-weight: 600;
-}
-
-.orch {
-  color: var(--text-dim);
-}
-
-.app {
-  font-size: 11px;
 }
 
 .stuckbar {

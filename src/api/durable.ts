@@ -400,6 +400,17 @@ export const MIN_REASON_LENGTH = 10;
 export type InstanceAction =
   'rewind' | 'restart' | 'raiseEvent' | 'suspend' | 'resume' | 'terminate' | 'purge';
 
+/**
+ * Visual severity, driving the colour charter — deliberately narrow so red keeps
+ * its meaning:
+ *   danger (red)  — irreversible data loss: purge only.
+ *   warn  (amber) — disruptive but recoverable: terminate.
+ *   normal        — benign or recovery: rewind, restart, suspend, resume, raiseEvent.
+ * This is separate from whether an action needs a confirmation dialog (they all
+ * do bar raiseEvent); a recovery action like Rewind should not look dangerous.
+ */
+export type ActionTone = 'danger' | 'warn' | 'normal';
+
 interface ActionMeta {
   label: string;
   /** Runtime statuses on which this action is valid (avoids offering a 410-Gone). */
@@ -411,8 +422,7 @@ interface ActionMeta {
    * forwarded and the dialog says so.
    */
   forwardsReason: boolean;
-  /** Irreversible or state-destroying — the UI styles these as dangerous. */
-  destructive: boolean;
+  tone: ActionTone;
 }
 
 /**
@@ -422,37 +432,37 @@ interface ActionMeta {
  * would just fail.
  */
 export const ACTION_META: Record<InstanceAction, ActionMeta> = {
-  rewind: { label: 'Rewind', validOn: ['Failed'], forwardsReason: true, destructive: true },
+  rewind: { label: 'Rewind', validOn: ['Failed'], forwardsReason: true, tone: 'normal' },
   restart: {
     label: 'Restart',
     validOn: ['Failed', 'Completed', 'Terminated', 'Canceled'],
     forwardsReason: false,
-    destructive: true,
+    tone: 'normal',
   },
   raiseEvent: {
     label: 'Raise event',
     validOn: ['Running', 'Pending', 'Suspended'],
     forwardsReason: false,
-    destructive: false,
+    tone: 'normal',
   },
   suspend: {
     label: 'Suspend',
     validOn: ['Running', 'Pending'],
     forwardsReason: true,
-    destructive: false,
+    tone: 'normal',
   },
-  resume: { label: 'Resume', validOn: ['Suspended'], forwardsReason: true, destructive: false },
+  resume: { label: 'Resume', validOn: ['Suspended'], forwardsReason: true, tone: 'normal' },
   terminate: {
     label: 'Terminate',
     validOn: ['Running', 'Pending', 'Suspended'],
     forwardsReason: true,
-    destructive: true,
+    tone: 'warn',
   },
   purge: {
     label: 'Purge',
     validOn: ['Failed', 'Completed', 'Terminated', 'Canceled'],
     forwardsReason: false,
-    destructive: true,
+    tone: 'danger',
   },
 };
 

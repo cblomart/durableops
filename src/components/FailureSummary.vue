@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { parseDurableError } from '../triage';
+import CopyButton from './CopyButton.vue';
 
 const props = defineProps<{
   /** The instance's `output` (Failed) or terminate reason (Terminated). */
@@ -9,21 +10,13 @@ const props = defineProps<{
 }>();
 
 const parsed = computed(() => parseDurableError(props.output));
-const copied = ref(false);
 
-async function copy(): Promise<void> {
-  const text =
-    parsed.value.stack === ''
-      ? parsed.value.headline
-      : `${parsed.value.headline}\n\n${parsed.value.stack}`;
-  try {
-    await navigator.clipboard.writeText(text);
-    copied.value = true;
-    setTimeout(() => (copied.value = false), 1500);
-  } catch {
-    // Clipboard can be blocked (permissions, insecure context); silently no-op.
-  }
-}
+/** The full failure text (headline + stack) for copying into an incident ticket. */
+const fullText = computed(() =>
+  parsed.value.stack === ''
+    ? parsed.value.headline
+    : `${parsed.value.headline}\n\n${parsed.value.stack}`
+);
 
 const showStack = ref(false);
 </script>
@@ -34,7 +27,7 @@ const showStack = ref(false);
       <span class="label">{{ runtimeStatus === 'Terminated' ? 'Terminated' : 'Failure' }}</span>
       <span v-if="parsed.failedFunction" class="fn mono">in {{ parsed.failedFunction }}</span>
       <div class="spacer" />
-      <button class="copy" @click="copy">{{ copied ? 'Copied' : 'Copy' }}</button>
+      <CopyButton :value="fullText" label="Copy failure" />
     </div>
 
     <p class="headline">{{ parsed.headline }}</p>
@@ -90,7 +83,6 @@ const showStack = ref(false);
   flex: 1;
 }
 
-.copy,
 .toggle {
   font-size: 11px;
   padding: 2px 8px;
