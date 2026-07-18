@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue';
 import type { DurableKind, FunctionApp, Operability } from '../api/arm';
 import type { FailureCount } from '../api/durable';
 import { useFavorites } from '../favorites';
@@ -13,25 +13,28 @@ const props = defineProps<{
   operable: Map<string, Operability>;
   /** True while the fleet is still being classified. */
   classifying: boolean;
-  /** Favourite app names (the scan's scope). */
-  favorites: string[];
-  /** App id -> failed instance count, from the favourites scan. */
+  /** App id -> failed instance count, filled in as rows are scanned. */
   failureScan: Map<string, FailureCount>;
-  /** True while the favourites scan is running. */
+  /** True while any opportunistic scan is in flight. */
   scanning: boolean;
+  /** Whether opportunistic (viewport) failure scanning is enabled. */
+  autoScan: boolean;
 }>();
 
-defineEmits<{ select: [app: FunctionApp]; scan: [] }>();
+const emit = defineEmits<{
+  select: [app: FunctionApp];
+  'update:autoScan': [value: boolean];
+  /** Emitted when a row scrolls into view and should be scanned. */
+  scan: [app: FunctionApp];
+}>();
 
 const { isFavorite, toggleFavorite } = useFavorites();
 const search = ref('');
 
-/** Failure count for an app from the scan, or null if it was not scanned. */
+/** Failure count for an app from the scan, or null if it was not scanned yet. */
 function failuresOf(app: FunctionApp): FailureCount | null {
   return props.failureScan.get(app.id) ?? null;
 }
-
-const anyFavorites = computed(() => props.apps.some((app) => props.favorites.includes(app.name)));
 
 /**
  * Only apps the operator can actually act on.
@@ -83,6 +86,45 @@ const visible = computed<FunctionApp[]>(() => {
     return fav !== 0 ? fav : a.name.localeCompare(b.name);
   });
 });
+
+/*
+ * Opportunistic scanning: watch the rendered rows with an IntersectionObserver
+ * and ask the parent to scan each one only as it scrolls into view. This is the
+ * throttle — at fleet scale we never scan (or pull a key for) an app the operator
+ * has not actually looked at. The parent owns the bounded queue and the keys.
+ */
+const bodyRef = useTemplateRef<HTMLElement>('body');
+let observer: IntersectionObserver | null = null;
+
+function onIntersect(entries: IntersectionObserverEntry[]): void {
+  if (!props.autoScan) return;
+  for (const entry of entries) {
+    if (!entry.isIntersecting) continue;
+    const id = (entry.target as HTMLElement).dataset['appId'];
+    const app = props.apps.find((candidate) => candidate.id === id);
+    if (app !== undefined) emit('scan', app);
+  }
+}
+
+function observeRows(): void {
+  const obs = observer;
+  const body = bodyRef.value;
+  if (obs === null || body === null) return;
+  obs.disconnect();
+  for (const row of body.querySelectorAll('[data-app-id]')) obs.observe(row);
+}
+
+onMounted(() => {
+  // `rootMargin` starts a scan slightly before a row is fully on screen.
+  observer = new IntersectionObserver(onIntersect, { rootMargin: '120px' });
+  void nextTick(observeRows);
+});
+
+onBeforeUnmount(() => observer?.disconnect());
+
+// Re-observe after the row set changes, and when scanning is switched on (so
+// rows already on screen are picked up immediately).
+watch([visible, () => props.autoScan], () => void nextTick(observeRows));
 </script>
 
 <template>
@@ -103,13 +145,20 @@ const visible = computed<FunctionApp[]>(() => {
       <div class="tspacer" />
 
       <!--
-        The 2 AM shortcut the operator asked for: check my starred apps for
-        failures before I pick one. Scoped to favourites because counting
-        failures pulls a per-app key — fine for a shortlist, not for the fleet.
+        Opportunistic failure scan. When on, each app is checked for failures as
+        it scrolls into view (throttled, bounded) — so at small scale every app
+        gets a badge and at fleet scale only what you look at is scanned. Off by
+        default: enabling it opts into pulling a key for the apps you browse.
       -->
-      <button v-if="anyFavorites" class="scan" :disabled="scanning" @click="$emit('scan')">
-        {{ scanning ? 'Scanning…' : 'Scan favourites for failures' }}
-      </button>
+      <label class="scan-toggle" title="Check apps for failures as they scroll into view">
+        <input
+          type="checkbox"
+          :checked="autoScan"
+          @change="emit('update:autoScan', ($event.target as HTMLInputElement).checked)"
+        />
+        Scan for failures
+      </label>
+      <span v-if="scanning" class="faint scanning">scanning…</span>
     </div>
 
     <p v-if="loading || classifying" class="state muted">Loading apps…</p>
@@ -135,8 +184,14 @@ const visible = computed<FunctionApp[]>(() => {
           <th>State</th>
         </tr>
       </thead>
-      <tbody>
-        <tr v-for="app in visible" :key="app.id" class="row" @click="$emit('select', app)">
+      <tbody ref="body">
+        <tr
+          v-for="app in visible"
+          :key="app.id"
+          :data-app-id="app.id"
+          class="row"
+          @click="$emit('select', app)"
+        >
           <td class="star">
             <button
               class="starbtn"
@@ -203,8 +258,17 @@ const visible = computed<FunctionApp[]>(() => {
   flex: 1;
 }
 
-.scan {
+.scan-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.scanning {
+  font-size: 11px;
 }
 
 .search {

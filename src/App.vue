@@ -36,7 +36,6 @@ import {
   type OrchestrationInstance,
 } from './api/durable';
 import { describeError, err, isPimRecoverable, type ApiError, type Result } from './api/errors';
-import { useFavorites } from './favorites';
 
 const user = ref<SignedInUser | null>(getSignedInUser());
 const apps = ref<FunctionApp[]>([]);
@@ -67,19 +66,71 @@ const classifying = ref(false);
 /** A GUID means nothing to an operator; resolved to a display name once signed in. */
 const tenantName = ref(user.value?.tenantId ?? '');
 
-const { favorites } = useFavorites();
-
 /**
- * Favourites failure scan: app id -> failed instance count.
+ * Opportunistic failure scan: app id -> failed instance count.
  *
- * Scoped to favourites on purpose. Counting failures needs a per-app key and a
- * webhook call; doing that fleet-wide would pull hundreds of keys just to draw a
- * list. Favourites are the operator's own shortlist of suspects, so scanning
- * them is both cheap and exactly what a 2 AM page wants: "which of my apps is on
- * fire, before I even pick one".
+ * Counting failures needs a per-app key and a webhook call, so scanning the
+ * whole fleet at once would pull hundreds of keys just to draw a list. Instead
+ * the app list scans only the rows scrolled into view (see AppList's intersection
+ * observer), through a bounded queue here — so at small scale everything gets a
+ * badge, and at fleet scale only what the operator actually looks at is scanned.
+ *
+ * Off by default: enabling it is the operator opting in to pulling keys for the
+ * apps they browse.
  */
 const failureScan = ref(new Map<string, FailureCount>());
+const autoScan = ref(false);
 const scanning = ref(false);
+
+/** Hits app runtimes, not ARM — keep it modest so a scan never storms an app. */
+const SCAN_CONCURRENCY = 4;
+const scanQueue: FunctionApp[] = [];
+const scanInFlight = new Set<string>();
+
+/** Queue an app for scanning (deduped), if scanning is on and the app is usable. */
+function enqueueScan(app: FunctionApp): void {
+  if (!autoScan.value) return;
+  if (failureScan.value.has(app.id) || scanInFlight.has(app.id)) return;
+  if (operable.value.get(app.id) === 'no' || durable.value.get(app.id) === 'no') return;
+  if (scanQueue.some((queued) => queued.id === app.id)) return;
+  scanQueue.push(app);
+  pumpScanQueue();
+}
+
+async function scanOne(app: FunctionApp): Promise<void> {
+  try {
+    const token = await getArmToken();
+    const key = await getDurableSystemKey(app, token);
+    keysInMemory.value = cachedKeyCount();
+    if (!key.ok) return;
+    const scan = await countFailedInstances({
+      hostName: app.defaultHostName,
+      systemKey: key.value,
+    });
+    if (scan.ok) failureScan.value = new Map(failureScan.value).set(app.id, scan.value);
+  } catch {
+    // A single app's scan failing must never break the list.
+  }
+}
+
+function pumpScanQueue(): void {
+  while (autoScan.value && scanInFlight.size < SCAN_CONCURRENCY && scanQueue.length > 0) {
+    const app = scanQueue.shift();
+    if (app === undefined) break;
+    scanInFlight.add(app.id);
+    scanning.value = true;
+    void scanOne(app).finally(() => {
+      scanInFlight.delete(app.id);
+      scanning.value = scanInFlight.size > 0 || scanQueue.length > 0;
+      pumpScanQueue();
+    });
+  }
+}
+
+// Turning the scan off drops the pending queue; in-flight scans finish on their own.
+watch(autoScan, (on) => {
+  if (!on) scanQueue.length = 0;
+});
 
 const selectedApp = ref<FunctionApp | null>(null);
 const target = ref<DurableTarget | null>(null);
@@ -136,42 +187,6 @@ async function classify(token: string): Promise<void> {
   }
 }
 
-/**
- * Scan favourite apps for failures, so the operator can see which of their
- * shortlisted apps is broken before opening any of them. Sequential and small:
- * favourites are few, and one struggling app should not get a burst of calls.
- */
-async function scanFavourites(): Promise<void> {
-  if (scanning.value) return;
-  const targets = apps.value.filter(
-    (app) =>
-      favorites.value.includes(app.name) &&
-      operable.value.get(app.id) !== 'no' &&
-      durable.value.get(app.id) !== 'no'
-  );
-  if (targets.length === 0) return;
-
-  scanning.value = true;
-  failureScan.value = new Map();
-  try {
-    const token = await getArmToken();
-    for (const app of targets) {
-      const key = await getDurableSystemKey(app, token);
-      keysInMemory.value = cachedKeyCount();
-      if (!key.ok) continue;
-      const scan = await countFailedInstances({
-        hostName: app.defaultHostName,
-        systemKey: key.value,
-      });
-      if (scan.ok) failureScan.value = new Map(failureScan.value).set(app.id, scan.value);
-    }
-  } catch (cause: unknown) {
-    setError(cause);
-  } finally {
-    scanning.value = false;
-  }
-}
-
 async function discover(forceRefresh = false): Promise<void> {
   const signedIn = user.value;
   if (signedIn === null) return;
@@ -216,6 +231,8 @@ async function refreshRights(): Promise<void> {
   durable.value = new Map();
   operable.value = new Map();
   failureScan.value = new Map();
+  scanQueue.length = 0;
+  scanInFlight.clear();
   target.value = null;
   instances.value = [];
   detail.value = null;
@@ -437,11 +454,12 @@ onMounted(() => {
         :durable="durable"
         :operable="operable"
         :classifying="classifying"
-        :favorites="favorites"
         :failure-scan="failureScan"
         :scanning="scanning"
+        :auto-scan="autoScan"
         @select="openApp"
-        @scan="scanFavourites"
+        @update:auto-scan="autoScan = $event"
+        @scan="enqueueScan"
       />
 
       <InstanceDetail

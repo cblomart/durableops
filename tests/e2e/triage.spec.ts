@@ -1,13 +1,5 @@
 import { test, expect } from '@playwright/test';
-import {
-  stubAzure,
-  signInAs,
-  seedFavorites,
-  instance,
-  failureOutput,
-  STUCK_HISTORY,
-  APP_NAME,
-} from './fixtures';
+import { stubAzure, signInAs, instance, failureOutput, STUCK_HISTORY, APP_NAME } from './fixtures';
 
 test.describe('signed out', () => {
   test('shows a sign-in prompt and no app list', async ({ page }) => {
@@ -409,18 +401,17 @@ test.describe('operability: only show what you can actually use', () => {
   });
 });
 
-test.describe('favourites failure scan', () => {
+test.describe('opportunistic failure scan', () => {
   test.beforeEach(async ({ page }) => {
     await signInAs(page);
   });
 
   /*
-   * The operator's 2 AM shortcut: check my starred apps for failures before
-   * opening any. The scan is scoped to favourites because counting failures
-   * pulls a per-app key.
+   * Enabling the scan checks each app for failures as it scrolls into view. With
+   * one app on screen it scans immediately and badges the failure count — the
+   * throttle only matters at fleet scale, where off-screen apps are left alone.
    */
-  test('scans favourites and badges the ones with failures', async ({ page }) => {
-    await seedFavorites(page, [APP_NAME]);
+  test('badges an app with its failure count once scanning is enabled', async ({ page }) => {
     await stubAzure(page, {
       instances: [
         instance('f1', 'OrderSaga', 'Failed', failureOutput('ChargeCard', 'boom')),
@@ -428,21 +419,27 @@ test.describe('favourites failure scan', () => {
       ],
     });
     await page.goto('/');
-    // The app must be listed (durable + operable) before we can scan it.
     await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toBeVisible();
 
-    await page.getByRole('button', { name: /Scan favourites/ }).click();
+    // No scanning, no badge, until the operator opts in (it pulls a key per app).
+    await expect(page.locator('.failbadge')).toHaveCount(0);
 
-    // The favourite is badged with its failure count.
+    await page.getByLabel('Scan for failures').check();
+
+    // The on-screen app is scanned and badged with its failure count.
     await expect(page.locator('.failbadge')).toHaveText(/2 failed/);
   });
 
-  test('offers no scan when nothing is favourited', async ({ page }) => {
-    await stubAzure(page);
+  test('does not scan until enabled', async ({ page }) => {
+    await stubAzure(page, {
+      instances: [instance('f1', 'OrderSaga', 'Failed', failureOutput('ChargeCard', 'boom'))],
+    });
     await page.goto('/');
     await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toBeVisible();
 
-    await expect(page.getByRole('button', { name: /Scan favourites/ })).toHaveCount(0);
+    // The toggle is offered, but off — no badge and no failure count fetched.
+    await expect(page.getByLabel('Scan for failures')).not.toBeChecked();
+    await expect(page.locator('.failbadge')).toHaveCount(0);
   });
 });
 
