@@ -78,20 +78,40 @@ const tenantName = ref(user.value?.tenantId ?? '');
  * this runs automatically; the bounded queue keeps it from storming any app.
  */
 const failureScan = ref(new Map<string, FailureCount>());
+/** app id -> when it was last scanned, so a visible row can refresh lazily. */
+const scannedAt = new Map<string, number>();
 const scanning = ref(false);
+/** app ids being scanned right now — reactive, so a row's refresh button can spin. */
+const scanningIds = ref<Set<string>>(new Set());
 
 /** Hits app runtimes, not ARM — keep it modest so a scan never storms an app. */
 const SCAN_CONCURRENCY = 4;
+/** A visible app's failure count is trusted for this long before a lazy re-scan. */
+const SCAN_TTL_MS = 60_000;
 const scanQueue: FunctionApp[] = [];
-const scanInFlight = new Set<string>();
 
-/** Queue a usable app for scanning, deduped against what is already done or in flight. */
-function enqueueScan(app: FunctionApp): void {
-  if (failureScan.value.has(app.id) || scanInFlight.has(app.id)) return;
+function isFreshlyScanned(id: string): boolean {
+  const at = scannedAt.get(id);
+  return at !== undefined && Date.now() - at < SCAN_TTL_MS;
+}
+
+/**
+ * Queue a usable app for scanning. Deduped against in-flight scans and, unless
+ * forced, against results still within the TTL — so the viewport tick can call
+ * this freely and only stale rows actually re-scan.
+ */
+function enqueueScan(app: FunctionApp, force = false): void {
+  if (scanningIds.value.has(app.id)) return;
+  if (!force && isFreshlyScanned(app.id)) return;
   if (operable.value.get(app.id) === 'no' || durable.value.get(app.id) === 'no') return;
   if (scanQueue.some((queued) => queued.id === app.id)) return;
   scanQueue.push(app);
   pumpScanQueue();
+}
+
+/** Force an immediate re-scan of one app (the per-app refresh button). */
+function rescanApp(app: FunctionApp): void {
+  enqueueScan(app, true);
 }
 
 async function scanOne(app: FunctionApp): Promise<void> {
@@ -107,18 +127,27 @@ async function scanOne(app: FunctionApp): Promise<void> {
     if (scan.ok) failureScan.value = new Map(failureScan.value).set(app.id, scan.value);
   } catch {
     // A single app's scan failing must never break the list.
+  } finally {
+    scannedAt.set(app.id, Date.now());
   }
 }
 
+function markInFlight(id: string, active: boolean): void {
+  const next = new Set(scanningIds.value);
+  if (active) next.add(id);
+  else next.delete(id);
+  scanningIds.value = next;
+}
+
 function pumpScanQueue(): void {
-  while (scanInFlight.size < SCAN_CONCURRENCY && scanQueue.length > 0) {
+  while (scanningIds.value.size < SCAN_CONCURRENCY && scanQueue.length > 0) {
     const app = scanQueue.shift();
     if (app === undefined) break;
-    scanInFlight.add(app.id);
+    markInFlight(app.id, true);
     scanning.value = true;
     void scanOne(app).finally(() => {
-      scanInFlight.delete(app.id);
-      scanning.value = scanInFlight.size > 0 || scanQueue.length > 0;
+      markInFlight(app.id, false);
+      scanning.value = scanningIds.value.size > 0 || scanQueue.length > 0;
       pumpScanQueue();
     });
   }
@@ -223,8 +252,9 @@ async function refreshRights(): Promise<void> {
   durable.value = new Map();
   operable.value = new Map();
   failureScan.value = new Map();
+  scannedAt.clear();
   scanQueue.length = 0;
-  scanInFlight.clear();
+  scanningIds.value = new Set();
   target.value = null;
   instances.value = [];
   detail.value = null;
@@ -316,6 +346,24 @@ async function openInstance(instance: OrchestrationInstance): Promise<void> {
     setError(cause);
   } finally {
     loading.value = false;
+  }
+}
+
+/** Manual re-fetch of the open instance (the detail refresh button). */
+const detailRefreshing = ref(false);
+
+async function refreshDetail(): Promise<void> {
+  const current = detail.value;
+  if (current === null || target.value === null || detailRefreshing.value) return;
+  detailRefreshing.value = true;
+  try {
+    const result = await getInstance(target.value, current.instanceId);
+    if (result.ok) detail.value = result.value;
+    else error.value = result.error;
+  } catch (cause: unknown) {
+    setError(cause);
+  } finally {
+    detailRefreshing.value = false;
   }
 }
 
@@ -448,8 +496,10 @@ onMounted(() => {
         :classifying="classifying"
         :failure-scan="failureScan"
         :scanning="scanning"
+        :scanning-ids="scanningIds"
         @select="openApp"
         @scan="enqueueScan"
+        @rescan="rescanApp"
       />
 
       <InstanceDetail
@@ -457,8 +507,10 @@ onMounted(() => {
         :detail="detail"
         :app-name="selectedApp.name"
         :runner="runAction"
+        :refreshing="detailRefreshing"
         @back="detail = null"
         @home="backToApps"
+        @refresh="refreshDetail"
         @action-done="onActionDone"
       />
 

@@ -46,6 +46,15 @@ test.describe('M3 actions', () => {
     await expect(bar.getByRole('button', { name: 'Restart' })).not.toHaveClass(/danger/);
   });
 
+  test('the refresh button re-fetches the instance detail', async ({ page }) => {
+    await openInstance(page, 'Running');
+    const [request] = await Promise.all([
+      page.waitForRequest((r) => /\/instances\/abc123\?/.test(r.url())),
+      page.getByRole('button', { name: 'Refresh instance' }).click(),
+    ]);
+    expect(request.method()).toBe('GET');
+  });
+
   test('breadcrumb lets the operator step back to the app or the app list', async ({ page }) => {
     await openInstance(page, 'Failed');
     // Broad-to-specific breadcrumb, so location is never in doubt.

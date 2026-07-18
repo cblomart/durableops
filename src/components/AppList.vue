@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, useTemplateRef, wa
 import type { DurableKind, FunctionApp, Operability } from '../api/arm';
 import type { FailureCount } from '../api/durable';
 import { useFavorites } from '../favorites';
+import RefreshButton from './RefreshButton.vue';
 
 const props = defineProps<{
   apps: FunctionApp[];
@@ -17,12 +18,16 @@ const props = defineProps<{
   failureScan: Map<string, FailureCount>;
   /** True while any opportunistic scan is in flight. */
   scanning: boolean;
+  /** App ids being scanned right now, so a row's refresh button can spin. */
+  scanningIds: Set<string>;
 }>();
 
 const emit = defineEmits<{
   select: [app: FunctionApp];
-  /** Emitted when a row scrolls into view and should be scanned. */
+  /** Emitted when a row scrolls into view and should be scanned (TTL-deduped by the parent). */
   scan: [app: FunctionApp];
+  /** Emitted by a row's refresh button to force an immediate re-scan. */
+  rescan: [app: FunctionApp];
 }>();
 
 const { isFavorite, toggleFavorite } = useFavorites();
@@ -86,19 +91,32 @@ const visible = computed<FunctionApp[]>(() => {
 
 /*
  * Opportunistic scanning: watch the rendered rows with an IntersectionObserver
- * and ask the parent to scan each one only as it scrolls into view. This is the
+ * and ask the parent to scan each one as it scrolls into view. This is the
  * throttle — at fleet scale we never scan (or pull a key for) an app the operator
- * has not actually looked at. The parent owns the bounded queue and the keys.
+ * has not actually looked at. The parent owns the bounded queue, the keys, and
+ * the TTL, so re-asking for an already-fresh app is a cheap no-op.
  */
 const bodyRef = useTemplateRef<HTMLElement>('body');
 let observer: IntersectionObserver | null = null;
 
+/** App ids whose rows are currently on screen, so the lazy tick knows what to refresh. */
+const onScreen = new Set<string>();
+
+function appById(id: string | undefined): FunctionApp | undefined {
+  return id === undefined ? undefined : props.apps.find((candidate) => candidate.id === id);
+}
+
 function onIntersect(entries: IntersectionObserverEntry[]): void {
   for (const entry of entries) {
-    if (!entry.isIntersecting) continue;
     const id = (entry.target as HTMLElement).dataset['appId'];
-    const app = props.apps.find((candidate) => candidate.id === id);
-    if (app !== undefined) emit('scan', app);
+    if (id === undefined) continue;
+    if (entry.isIntersecting) {
+      onScreen.add(id);
+      const app = appById(id);
+      if (app !== undefined) emit('scan', app);
+    } else {
+      onScreen.delete(id);
+    }
   }
 }
 
@@ -107,16 +125,41 @@ function observeRows(): void {
   const body = bodyRef.value;
   if (obs === null || body === null) return;
   obs.disconnect();
+  onScreen.clear();
   for (const row of body.querySelectorAll('[data-app-id]')) obs.observe(row);
+}
+
+/** Re-ask the parent to scan every on-screen app; it re-scans only the stale ones. */
+function refreshOnScreen(): void {
+  for (const id of onScreen) {
+    const app = appById(id);
+    if (app !== undefined) emit('scan', app);
+  }
+}
+
+// Lazy refresh: every 30s, nudge the visible rows. The parent's 60s TTL means a
+// row that stays on screen re-scans about once a minute, and off-screen rows are
+// left alone. Also refresh when the operator returns to the tab.
+const REFRESH_TICK_MS = 30_000;
+let ticker: ReturnType<typeof setInterval> | null = null;
+
+function onVisibilityChange(): void {
+  if (document.visibilityState === 'visible') refreshOnScreen();
 }
 
 onMounted(() => {
   // `rootMargin` starts a scan slightly before a row is fully on screen.
   observer = new IntersectionObserver(onIntersect, { rootMargin: '120px' });
   void nextTick(observeRows);
+  ticker = setInterval(refreshOnScreen, REFRESH_TICK_MS);
+  document.addEventListener('visibilitychange', onVisibilityChange);
 });
 
-onBeforeUnmount(() => observer?.disconnect());
+onBeforeUnmount(() => {
+  observer?.disconnect();
+  if (ticker !== null) clearInterval(ticker);
+  document.removeEventListener('visibilitychange', onVisibilityChange);
+});
 
 // Re-observe whenever the row set changes (search, sort, discovery) OR when the
 // table first appears — the table is only rendered once loading/classifying
@@ -222,6 +265,12 @@ watch([visible, () => props.loading, () => props.classifying], () => void nextTi
               title="No failed or terminated instances found"
               >✓ healthy</span
             >
+            <!-- Per-app manual refresh: re-scan this app's failure count now. -->
+            <RefreshButton
+              :busy="scanningIds.has(app.id)"
+              :label="`Re-scan ${app.name} for failures`"
+              @refresh="$emit('rescan', app)"
+            />
           </td>
           <td class="muted">{{ app.resourceGroup }}</td>
           <td class="muted">{{ app.location }}</td>
@@ -326,11 +375,16 @@ watch([visible, () => props.loading, () => props.classifying], () => void nextTi
   font-weight: 500;
 }
 
+.health {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .failcount {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  margin-left: 10px;
   color: var(--danger);
   font-weight: 600;
   font-size: 12px;

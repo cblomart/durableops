@@ -8,17 +8,20 @@ import HistoryTimeline from './HistoryTimeline.vue';
 import FailureSummary from './FailureSummary.vue';
 import ActionBar from './ActionBar.vue';
 import CopyButton from './CopyButton.vue';
+import RefreshButton from './RefreshButton.vue';
 
 const props = defineProps<{
   detail: InstanceDetail;
   appName: string;
+  /** True while a manual refresh of this instance is in flight. */
+  refreshing: boolean;
   runner: (
     action: InstanceAction,
     args: { reason?: string; eventName?: string; payload?: unknown }
   ) => Promise<Result<void>>;
 }>();
 
-defineEmits<{ back: []; home: []; actionDone: [action: InstanceAction] }>();
+defineEmits<{ back: []; home: []; refresh: []; actionDone: [action: InstanceAction] }>();
 
 const stuck = computed(() => detectStuck(props.detail.historyEvents, props.detail.runtimeStatus));
 
@@ -51,6 +54,8 @@ const isProblem = computed(
         <span class="idlabel faint">instance</span>
         <span class="id mono">{{ detail.instanceId }}</span>
         <CopyButton :value="detail.instanceId" label="Copy instance ID" />
+        <!-- Manual refresh: re-fetch this instance's status and history now. -->
+        <RefreshButton :busy="refreshing" label="Refresh instance" @refresh="$emit('refresh')" />
       </div>
     </header>
 

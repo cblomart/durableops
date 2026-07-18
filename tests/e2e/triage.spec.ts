@@ -435,6 +435,22 @@ test.describe('opportunistic failure scan', () => {
     await expect(page.locator('.clean')).toContainText('healthy');
     await expect(page.locator('tbody tr').first()).not.toHaveClass(/problem/);
   });
+
+  test('a per-app refresh button forces an immediate re-scan', async ({ page }) => {
+    await stubAzure(page, {
+      instances: [instance('f1', 'OrderSaga', 'Failed', failureOutput('ChargeCard', 'boom'))],
+    });
+    await page.goto('/');
+    // Scanned once on sight.
+    await expect(page.locator('.failcount')).toBeVisible();
+
+    // The refresh button forces a fresh failed-count request for that app.
+    const [request] = await Promise.all([
+      page.waitForRequest((r) => /\/instances\?.*runtimeStatus=Failed/.test(r.url())),
+      page.getByRole('button', { name: /Re-scan .* for failures/ }).click(),
+    ]);
+    expect(request.method()).toBe('GET');
+  });
 });
 
 test.describe('account menu', () => {
