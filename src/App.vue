@@ -319,8 +319,17 @@ function buildQuery(token?: string) {
   };
 }
 
+/*
+ * Monotonic guard against out-of-order responses: the filters now apply on
+ * change, so a fast operator can have two list fetches in flight. Without this,
+ * whichever *resolves* last wins — not whichever was *requested* last — and the
+ * grid could settle on stale, wrong-filtered instances.
+ */
+let fetchToken = 0;
+
 async function fetchInstances(append = false): Promise<void> {
   if (target.value === null) return;
+  const token = ++fetchToken;
   loading.value = true;
   error.value = null;
   try {
@@ -328,6 +337,7 @@ async function fetchInstances(append = false): Promise<void> {
       target.value,
       buildQuery(append ? continuationToken.value : undefined)
     );
+    if (token !== fetchToken) return; // a newer fetch superseded this one
     if (!result.ok) {
       error.value = result.error;
       return;
@@ -337,9 +347,9 @@ async function fetchInstances(append = false): Promise<void> {
       : result.value.instances;
     continuationToken.value = result.value.continuationToken;
   } catch (cause: unknown) {
-    setError(cause);
+    if (token === fetchToken) setError(cause);
   } finally {
-    loading.value = false;
+    if (token === fetchToken) loading.value = false;
   }
 }
 
@@ -475,9 +485,15 @@ function onActionDone(action: InstanceAction): void {
   }
   const current = detail.value;
   if (current === null || target.value === null) return;
+  const instanceId = current.instanceId;
   window.setTimeout(() => {
-    void getInstance(target.value as DurableTarget, current.instanceId).then((result) => {
-      if (result.ok) detail.value = result.value;
+    // Re-read state here: 2s is long enough for the operator to have navigated
+    // away (target cleared) or opened a different instance. Both would make this
+    // re-fetch wrong, so guard rather than cast the null away.
+    const t = target.value;
+    if (t === null || detail.value?.instanceId !== instanceId) return;
+    void getInstance(t, instanceId).then((result) => {
+      if (result.ok && detail.value?.instanceId === instanceId) detail.value = result.value;
     });
   }, 2000);
 }

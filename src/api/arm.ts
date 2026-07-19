@@ -130,7 +130,18 @@ async function armFetch(
     return err(toApiError(response.status, response.headers.get('Retry-After'), text));
   }
 
-  return ok((await response.json()) as unknown);
+  // Parse inside the guard: a 2xx with a non-JSON body (a proxy error page, a
+  // truncated response) must surface as an error, not reject the promise — some
+  // callers are fire-and-forget (getTenantName) and a rejection there is unhandled.
+  try {
+    return ok((await response.json()) as unknown);
+  } catch {
+    return err({
+      kind: 'http',
+      status: response.status,
+      message: 'management.azure.com returned invalid JSON',
+    });
+  }
 }
 
 function readString(record: Record<string, unknown>, key: string): string {

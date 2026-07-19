@@ -10,7 +10,11 @@ export default defineConfig({
     // The brief targets < 300 KB gzipped. Fail loudly well before that so a
     // dependency creeping in gets noticed in review, not in production.
     chunkSizeWarningLimit: 400,
-    sourcemap: true,
+    // No production sourcemap. It embeds the full original source — including the
+    // e2e auth-seam string — into a file served at the app origin, which both
+    // bloats the deploy and defeats the "seam absent from dist/" CI guarantee.
+    // `vite dev` keeps sourcemaps regardless, so local debugging is unaffected.
+    sourcemap: false,
   },
   test: {
     environment: 'node',

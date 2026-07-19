@@ -672,4 +672,19 @@ describe('getTenantName', () => {
       getTenantName(TENANT, TOKEN, vi.fn().mockResolvedValue(jsonResponse({ bad: true })))
     ).resolves.toBe(TENANT);
   });
+
+  /*
+   * A 2xx with a non-JSON body (a proxy error page) must resolve to the fallback,
+   * never reject: getTenantName is called fire-and-forget, so a rejection here is
+   * an unhandled promise rejection.
+   */
+  it('falls back rather than rejecting when a 200 carries a non-JSON body', async () => {
+    const notJson = new Response('<html>gateway error</html>', {
+      status: 200,
+      headers: { 'Content-Type': 'text/html' },
+    });
+    await expect(getTenantName(TENANT, TOKEN, vi.fn().mockResolvedValue(notJson))).resolves.toBe(
+      TENANT
+    );
+  });
 });
