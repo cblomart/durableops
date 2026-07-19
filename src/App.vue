@@ -5,6 +5,7 @@ import AppList from './components/AppList.vue';
 import InstanceList from './components/InstanceList.vue';
 import InstanceDetail from './components/InstanceDetail.vue';
 import RefreshButton from './components/RefreshButton.vue';
+import CopyButton from './components/CopyButton.vue';
 import { emptyFilters, type Filters } from './filters';
 import { getArmToken, getSignedInUser, signIn, signOut, type SignedInUser } from './auth';
 import {
@@ -80,6 +81,15 @@ const tenantName = ref(user.value?.tenantId ?? '');
  * this runs automatically; the bounded queue keeps it from storming any app.
  */
 const failureScan = ref(new Map<string, FailureCount>());
+/**
+ * App id -> why its data plane is unreachable from this browser.
+ *
+ * The scan calls the app's own hostname directly (no backend), so an app whose
+ * CORS list omits our origin — or that sits behind Easy Auth — fails the browser's
+ * cross-origin check before we read anything. That is a fixable config gap, not a
+ * failure of the app, so we flag it rather than leave the row blank.
+ */
+const unreachable = ref(new Map<string, 'cors' | 'easyAuth'>());
 /** app id -> when it was last scanned, so a visible row can refresh lazily. */
 const scannedAt = new Map<string, number>();
 const scanning = ref(false);
@@ -116,6 +126,17 @@ function rescanApp(app: FunctionApp): void {
   enqueueScan(app, true);
 }
 
+function setUnreachable(id: string, kind: 'cors' | 'easyAuth'): void {
+  unreachable.value = new Map(unreachable.value).set(id, kind);
+}
+
+function clearUnreachable(id: string): void {
+  if (!unreachable.value.has(id)) return;
+  const next = new Map(unreachable.value);
+  next.delete(id);
+  unreachable.value = next;
+}
+
 async function scanOne(app: FunctionApp): Promise<void> {
   try {
     const token = await getArmToken();
@@ -126,7 +147,13 @@ async function scanOne(app: FunctionApp): Promise<void> {
       hostName: app.defaultHostName,
       systemKey: key.value,
     });
-    if (scan.ok) failureScan.value = new Map(failureScan.value).set(app.id, scan.value);
+    if (scan.ok) {
+      failureScan.value = new Map(failureScan.value).set(app.id, scan.value);
+      clearUnreachable(app.id);
+    } else if (scan.error.kind === 'cors' || scan.error.kind === 'easyAuth') {
+      // The scan is the real data-plane call, so it detects the block for free.
+      setUnreachable(app.id, scan.error.kind);
+    }
   } catch {
     // A single app's scan failing must never break the list.
   } finally {
@@ -182,6 +209,16 @@ function setError(cause: unknown): void {
     message: cause instanceof Error ? cause.message : 'Something went wrong',
   };
 }
+
+/** This app's own origin — the value an operator adds to a blocked app's CORS list. */
+const appOrigin = window.location.origin;
+
+/** A ready-to-run command to allow this origin on the currently open app. */
+const corsCommand = computed(() => {
+  const app = selectedApp.value;
+  if (app === null) return '';
+  return `az functionapp cors add -g ${app.resourceGroup} -n ${app.name} --allowed-origins "${appOrigin}"`;
+});
 
 /**
  * Work out what the operator can actually use, in the background.
@@ -254,6 +291,7 @@ async function refreshRights(): Promise<void> {
   durable.value = new Map();
   operable.value = new Map();
   failureScan.value = new Map();
+  unreachable.value = new Map();
   scannedAt.clear();
   scanQueue.length = 0;
   scanningIds.value = new Set();
@@ -581,14 +619,32 @@ onUnmounted(() => {
 
     <template v-else>
       <div v-if="error" class="banner error err">
-        <div>{{ describeError(error) }}</div>
-        <RefreshButton
-          v-if="isPimRecoverable(error)"
-          label="Refresh rights"
-          text="Refresh rights"
-          :busy="busy"
-          @refresh="refreshRights"
-        />
+        <div class="errtop">
+          <div>{{ describeError(error) }}</div>
+          <RefreshButton
+            v-if="isPimRecoverable(error)"
+            label="Refresh rights"
+            text="Refresh rights"
+            :busy="busy"
+            @refresh="refreshRights"
+          />
+        </div>
+        <!--
+          A CORS block is one config line to fix, so hand the operator both the
+          exact origin (to paste into the portal) and a ready-to-run command.
+        -->
+        <div v-if="error.kind === 'cors' && selectedApp !== null" class="corsfix">
+          <div class="corsrow">
+            <span class="clbl">Origin to allow</span>
+            <code class="mono">{{ appOrigin }}</code>
+            <CopyButton :value="appOrigin" label="Copy origin" />
+          </div>
+          <div class="corsrow">
+            <span class="clbl">Or run</span>
+            <code class="mono cmd">{{ corsCommand }}</code>
+            <CopyButton :value="corsCommand" label="Copy command" />
+          </div>
+        </div>
       </div>
 
       <AppList
@@ -599,6 +655,7 @@ onUnmounted(() => {
         :operable="operable"
         :classifying="classifying"
         :failure-scan="failureScan"
+        :unreachable="unreachable"
         :scanning="scanning"
         :scanning-ids="scanningIds"
         @select="openApp"
@@ -688,9 +745,53 @@ main {
 .err {
   margin: 12px 14px 0;
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.errtop {
+  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.corsfix {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+}
+
+.corsrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.corsrow .clbl {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-faint);
+  min-width: 92px;
+}
+
+.corsrow code {
+  font-size: 12px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.corsrow code.cmd {
+  overflow-x: auto;
+  max-width: 100%;
+  white-space: pre;
 }
 
 .crumbs {

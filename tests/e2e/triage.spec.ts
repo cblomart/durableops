@@ -500,6 +500,45 @@ test.describe('opportunistic failure scan', () => {
   });
 });
 
+test.describe('unreachable apps (CORS / Easy Auth)', () => {
+  test.beforeEach(async ({ page }) => {
+    await signInAs(page);
+  });
+
+  /*
+   * With no backend, the scan calls the app's own hostname; a browser CORS block
+   * (or Easy Auth) fails that call. The row flags it as a fixable config gap — in
+   * amber, not the red reserved for actual failures.
+   */
+  test('flags an app the browser cannot reach', async ({ page }) => {
+    await stubAzure(page, { blockDataPlane: true });
+    await page.goto('/');
+    await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toBeVisible();
+
+    await expect(page.locator('.blocked')).toContainText('unreachable');
+    await expect(page.locator('tbody tr').first()).not.toHaveClass(/problem/);
+  });
+
+  test('opening a blocked app shows the exact origin and command to fix it', async ({
+    page,
+    context,
+  }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await stubAzure(page, { blockDataPlane: true });
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+
+    await expect(page.getByText(/browser blocked this request/)).toBeVisible();
+    const fix = page.locator('.corsfix');
+    await expect(fix.locator('code.cmd')).toContainText('az functionapp cors add');
+    await expect(fix.locator('code.cmd')).toContainText(APP_NAME);
+
+    await fix.getByRole('button', { name: 'Copy origin' }).click({ force: true });
+    const clip = await page.evaluate(() => navigator.clipboard.readText());
+    expect(clip).toMatch(/^https?:\/\//);
+  });
+});
+
 test.describe('account menu', () => {
   test('signed out shows a sign-in pill and no avatar', async ({ page }) => {
     await stubAzure(page);

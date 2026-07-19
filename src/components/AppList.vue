@@ -16,6 +16,8 @@ const props = defineProps<{
   classifying: boolean;
   /** App id -> failed instance count, filled in as rows are scanned. */
   failureScan: Map<string, FailureCount>;
+  /** App id -> why the app's data plane is unreachable from this browser (CORS / Easy Auth). */
+  unreachable: Map<string, 'cors' | 'easyAuth'>;
   /** True while any opportunistic scan is in flight. */
   scanning: boolean;
   /** App ids being scanned right now, so a row's refresh button can spin. */
@@ -36,6 +38,11 @@ const search = ref('');
 /** Failure count for an app from the scan, or null if it was not scanned yet. */
 function failuresOf(app: FunctionApp): FailureCount | null {
   return props.failureScan.get(app.id) ?? null;
+}
+
+/** True when the scan found the app's data plane blocked (CORS / Easy Auth). */
+function isUnreachable(app: FunctionApp): boolean {
+  return props.unreachable.has(app.id);
 }
 
 /**
@@ -220,7 +227,10 @@ watch([visible, () => props.loading, () => props.classifying], () => void nextTi
           :key="app.id"
           :data-app-id="app.id"
           class="row"
-          :class="{ problem: (failuresOf(app)?.count ?? 0) > 0 }"
+          :class="{
+            problem: (failuresOf(app)?.count ?? 0) > 0,
+            blockedrow: isUnreachable(app),
+          }"
           @click="$emit('select', app)"
         >
           <td class="star">
@@ -251,8 +261,20 @@ watch([visible, () => props.loading, () => props.classifying], () => void nextTi
             Kept out of the Name cell so the app's name stays its own identity.
           -->
           <td class="health">
+            <!--
+              An app whose data plane the browser cannot reach (CORS/Easy Auth)
+              can't be scanned at all, so it leads with a fixable-config flag
+              rather than a blank or a misleading tick. Opening it shows the exact
+              origin and command to fix it.
+            -->
             <span
-              v-if="failuresOf(app) && failuresOf(app)!.count > 0"
+              v-if="isUnreachable(app)"
+              class="blocked"
+              title="Unreachable from this browser — the app must allow this origin (CORS) or exclude the durabletask path from Easy Auth. Open it for the exact fix."
+              >⚠ unreachable</span
+            >
+            <span
+              v-else-if="failuresOf(app) && failuresOf(app)!.count > 0"
               class="failcount"
               :title="`${failuresOf(app)!.count}${failuresOf(app)!.more ? '+' : ''} failed or terminated instance(s)`"
             >
@@ -371,6 +393,11 @@ watch([visible, () => props.loading, () => props.classifying], () => void nextTi
   box-shadow: inset 3px 0 0 var(--danger);
 }
 
+/* Unreachable: a quieter amber edge — noticeable, but not the red of a failure. */
+.row.blockedrow > td:first-child {
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+
 .name {
   font-weight: 500;
 }
@@ -401,6 +428,14 @@ watch([visible, () => props.loading, () => props.classifying], () => void nextTi
   margin-left: 10px;
   font-size: 11px;
   color: var(--ok);
+}
+
+/* A config gap, not a failure: warn amber, not the red reserved for failures. */
+.blocked {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--warn);
+  cursor: help;
 }
 
 .star {

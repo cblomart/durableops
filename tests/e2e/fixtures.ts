@@ -88,6 +88,8 @@ export interface StubOptions {
   bindings?: string[];
   /** Force the /functions call to 403, so the app classifies as "unknown". */
   forbidFunctions?: boolean;
+  /** Abort every data-plane (durabletask webhook) call, reproducing a browser CORS block. */
+  blockDataPlane?: boolean;
   // RBAC actions the signed-in user holds. Defaults to a role that can operate.
   // Passing only a read wildcard reproduces Reader: sees every app, operates none.
   actions?: string[];
@@ -103,6 +105,7 @@ export async function stubAzure(page: Page, options: StubOptions = {}): Promise<
     forbidKeys = false,
     bindings = ['orchestrationTrigger', 'activityTrigger'],
     forbidFunctions = false,
+    blockDataPlane = false,
     actions = ['Microsoft.Web/sites/read', 'Microsoft.Web/sites/host/listkeys/action'],
   } = options;
 
@@ -145,6 +148,13 @@ export async function stubAzure(page: Page, options: StubOptions = {}): Promise<
       ? route.fulfill({ status: 403, body: 'RBAC denied' })
       : route.fulfill({ json: { systemKeys: { durabletask_extension: 'stub-key' } } })
   );
+
+  // A blocked data plane: the browser aborts every cross-origin call before the
+  // app reads it — exactly what a missing CORS allow-list (or Easy Auth) does.
+  if (blockDataPlane) {
+    await page.route('**/runtime/webhooks/durabletask/**', (route: Route) => route.abort());
+    return;
+  }
 
   // Instance detail must be routed before the collection route, since the
   // collection glob would otherwise swallow it.
