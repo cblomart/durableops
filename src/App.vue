@@ -274,9 +274,6 @@ function buildQuery(token?: string) {
   const to = filters.value.createdTo;
   return {
     ...(filters.value.statuses.length > 0 ? { runtimeStatus: filters.value.statuses } : {}),
-    ...(filters.value.instanceIdPrefix !== ''
-      ? { instanceIdPrefix: filters.value.instanceIdPrefix }
-      : {}),
     ...(from !== '' ? { createdTimeFrom: new Date(from) } : {}),
     ...(to !== '' ? { createdTimeTo: new Date(to) } : {}),
     ...(token === undefined ? {} : { continuationToken: token }),
@@ -671,6 +668,7 @@ onUnmounted(() => {
           @apply="fetchInstances(false)"
           @load-more="fetchInstances(true)"
           @select="openInstance"
+          @go-to-instance="openInstanceById"
         />
       </template>
     </template>

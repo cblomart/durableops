@@ -23,6 +23,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:filters': [filters: Filters];
   select: [instance: OrchestrationInstance];
+  goToInstance: [instanceId: string];
   loadMore: [];
   apply: [];
 }>();
@@ -60,15 +61,74 @@ function patch(change: Partial<Filters>): void {
   emit('update:filters', { ...props.filters, ...change });
 }
 
+/*
+ * Server-side filters apply on change: toggling a status or picking a time range
+ * re-queries at once, so the list always matches the controls. A half-typed
+ * custom range is the one exception — it applies on its own button.
+ */
 function toggleStatus(status: RuntimeStatus): void {
   const statuses = props.filters.statuses.includes(status)
     ? props.filters.statuses.filter((s) => s !== status)
     : [...props.filters.statuses, status];
   patch({ statuses });
+  emit('apply');
 }
 
 function toggleSignature(signature: string): void {
   signatureFilter.value = signatureFilter.value === signature ? null : signature;
+}
+
+// Created-time window: quick presets instead of two fiddly date pickers.
+interface TimePreset {
+  label: string;
+  ms: number;
+}
+const TIME_PRESETS: TimePreset[] = [
+  { label: '15m', ms: 15 * 60_000 },
+  { label: '1h', ms: 60 * 60_000 },
+  { label: '24h', ms: 24 * 60 * 60_000 },
+  { label: '7d', ms: 7 * 24 * 60 * 60_000 },
+];
+/** 'all' | a preset label | 'custom' — drives which pill reads as active. */
+const activeWindow = ref<string>('all');
+const showCustom = ref(false);
+
+/** A Date as a `datetime-local` value in the viewer's own timezone. */
+function toLocalInput(date: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const year = String(date.getFullYear());
+  return `${year}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function applyPreset(preset: TimePreset): void {
+  activeWindow.value = preset.label;
+  showCustom.value = false;
+  patch({ createdFrom: toLocalInput(new Date(Date.now() - preset.ms)), createdTo: '' });
+  emit('apply');
+}
+
+function clearWindow(): void {
+  activeWindow.value = 'all';
+  showCustom.value = false;
+  patch({ createdFrom: '', createdTo: '' });
+  emit('apply');
+}
+
+function toggleCustom(): void {
+  showCustom.value = !showCustom.value;
+  if (showCustom.value) activeWindow.value = 'custom';
+}
+
+// Go to instance: an exact-id jump (opens the detail via the router), not a
+// prefix filter — instance ids are typically random, so a prefix means nothing.
+const gotoId = ref('');
+const canGoto = computed(() => gotoId.value.trim() !== '');
+
+function submitGoto(): void {
+  const id = gotoId.value.trim();
+  if (id === '') return;
+  emit('goToInstance', id);
+  gotoId.value = '';
 }
 
 /*
@@ -188,8 +248,8 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <div class="inputs">
-        <label>
+      <div class="controls">
+        <label class="field">
           <span class="lbl">Orchestrator</span>
           <select
             :value="filters.orchestrator"
@@ -200,37 +260,63 @@ onBeforeUnmount(() => {
           </select>
         </label>
 
-        <label>
-          <span class="lbl">Instance ID prefix</span>
-          <input
-            ref="searchInput"
-            type="text"
-            :value="filters.instanceIdPrefix"
-            placeholder="order-  ( / )"
-            @input="patch({ instanceIdPrefix: ($event.target as HTMLInputElement).value })"
-          />
-        </label>
+        <div class="field">
+          <span class="lbl">Created</span>
+          <div class="presets">
+            <button
+              v-for="preset in TIME_PRESETS"
+              :key="preset.label"
+              class="pill"
+              :class="{ on: activeWindow === preset.label }"
+              @click="applyPreset(preset)"
+            >
+              {{ preset.label }}
+            </button>
+            <button class="pill" :class="{ on: activeWindow === 'all' }" @click="clearWindow">
+              All
+            </button>
+            <button class="pill" :class="{ on: showCustom }" @click="toggleCustom">Custom…</button>
+          </div>
+        </div>
 
-        <label>
-          <span class="lbl">Created from</span>
+        <!--
+          Not a prefix filter: an exact-id jump. An operator arrives from an alert
+          holding the whole id, so "/" focuses this and Enter opens the instance.
+        -->
+        <label class="field goto">
+          <span class="lbl">Go to instance</span>
+          <div class="gotobox">
+            <input
+              ref="searchInput"
+              v-model="gotoId"
+              type="text"
+              placeholder="instance id  ( / )"
+              @keydown.enter="submitGoto"
+            />
+            <button class="primary go" :disabled="!canGoto" @click="submitGoto">Go</button>
+          </div>
+        </label>
+      </div>
+
+      <div v-if="showCustom" class="customrange">
+        <label class="field">
+          <span class="lbl">From</span>
           <input
             type="datetime-local"
             :value="filters.createdFrom"
             @input="patch({ createdFrom: ($event.target as HTMLInputElement).value })"
           />
         </label>
-
-        <label>
-          <span class="lbl">Created to</span>
+        <label class="field">
+          <span class="lbl">To</span>
           <input
             type="datetime-local"
             :value="filters.createdTo"
             @input="patch({ createdTo: ($event.target as HTMLInputElement).value })"
           />
         </label>
-
         <button class="primary" :disabled="loading" @click="emit('apply')">
-          {{ loading ? 'Loading…' : 'Apply' }}
+          {{ loading ? 'Loading…' : 'Apply range' }}
         </button>
       </div>
     </div>
@@ -410,17 +496,17 @@ onBeforeUnmount(() => {
   color: #fff;
 }
 
-.inputs {
+.controls {
   display: flex;
   align-items: flex-end;
-  gap: 10px;
+  gap: 16px;
   flex-wrap: wrap;
 }
 
-label {
+.field {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 
 .lbl {
@@ -431,6 +517,7 @@ label {
 }
 
 select,
+input[type='text'],
 input[type='datetime-local'],
 input[type='number'] {
   font: inherit;
@@ -439,6 +526,56 @@ input[type='number'] {
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 4px 6px;
+}
+
+/* Time-window presets: small toggle pills, one active at a time. */
+.presets {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.pill {
+  font-size: 12px;
+  padding: 4px 9px;
+  border-radius: 10px;
+  color: var(--text-dim);
+}
+
+.pill.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* Go-to-instance: an input welded to its Go button, so they read as one control. */
+.goto {
+  flex: 1;
+  min-width: 220px;
+}
+
+.gotobox {
+  display: flex;
+}
+
+.gotobox input {
+  flex: 1;
+  min-width: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.gotobox .go {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.customrange {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 0 2px;
 }
 
 .state {

@@ -177,18 +177,48 @@ test.describe('triage and instance list', () => {
     await expect(page.locator('.title .id')).toBeVisible();
   });
 
-  test('"/" focuses the search field', async ({ page }) => {
+  test('"/" focuses the Go-to-instance field', async ({ page }) => {
     await stubAzure(page, { instances: [instance('i1', 'OrderSaga', 'Running')] });
     await page.goto('/');
     await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
     await expect(page.locator('tbody tr').first()).toBeVisible();
 
     await page.keyboard.press('/');
-    // The instance-id prefix field takes focus; typing there must not move rows.
+    // The Go-to-instance field takes focus; typing there must not move rows.
     const focusedPlaceholder = await page.evaluate(
       () => (document.activeElement as HTMLInputElement | null)?.placeholder
     );
-    expect(focusedPlaceholder).toContain('order-');
+    expect(focusedPlaceholder).toContain('instance id');
+  });
+
+  /*
+   * Instance ids are random, so the field is an exact jump, not a prefix filter:
+   * paste the id from an alert, Enter, and land on that instance's detail.
+   */
+  test('Go to instance opens an instance by its exact id', async ({ page }) => {
+    await stubAzure(page, { instances: [instance('i1', 'OrderSaga', 'Running')] });
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+    await expect(page.getByRole('table')).toBeVisible();
+
+    await page.getByPlaceholder(/instance id/).fill('abc123');
+    await page.getByPlaceholder(/instance id/).press('Enter');
+
+    await expect(page.locator('.title .id')).toBeVisible();
+    await expect(page).toHaveURL(/#\/app\/func-prod-billing\/i\/abc123$/);
+  });
+
+  test('a created-time preset scopes the query by createdTimeFrom', async ({ page }) => {
+    await stubAzure(page, { instances: [instance('i1', 'OrderSaga', 'Running')] });
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+    await expect(page.getByRole('table')).toBeVisible();
+
+    const [request] = await Promise.all([
+      page.waitForRequest((r) => /createdTimeFrom=/.test(r.url())),
+      page.getByRole('button', { name: '1h', exact: true }).click(),
+    ]);
+    expect(request.method()).toBe('GET');
   });
 });
 

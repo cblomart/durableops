@@ -14,13 +14,11 @@ export interface Filters {
   statuses: RuntimeStatus[];
   /** Applied client-side: the webhook API has no server-side name filter. */
   orchestrator: string;
-  /** Server-side (extension >= 2.7.2). */
-  instanceIdPrefix: string;
   /** `datetime-local` values, converted to ISO on send. */
   createdFrom: string;
   createdTo: string;
 }
 
 export function emptyFilters(): Filters {
-  return { statuses: [], orchestrator: '', instanceIdPrefix: '', createdFrom: '', createdTo: '' };
+  return { statuses: [], orchestrator: '', createdFrom: '', createdTo: '' };
 }
