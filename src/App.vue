@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import TopBar from './components/TopBar.vue';
 import AppList from './components/AppList.vue';
 import InstanceList from './components/InstanceList.vue';
@@ -37,6 +37,7 @@ import {
   type OrchestrationInstance,
 } from './api/durable';
 import { describeError, err, isPimRecoverable, type ApiError, type Result } from './api/errors';
+import { parseHash, routeToHash, sameRoute, type Route } from './router';
 
 const user = ref<SignedInUser | null>(getSignedInUser());
 const apps = ref<FunctionApp[]>([]);
@@ -335,12 +336,12 @@ async function openApp(app: FunctionApp): Promise<void> {
   }
 }
 
-async function openInstance(instance: OrchestrationInstance): Promise<void> {
+async function openInstanceById(instanceId: string): Promise<void> {
   if (target.value === null) return;
   loading.value = true;
   error.value = null;
   try {
-    const result = await getInstance(target.value, instance.instanceId);
+    const result = await getInstance(target.value, instanceId);
     if (result.ok) detail.value = result.value;
     else error.value = result.error;
   } catch (cause: unknown) {
@@ -348,6 +349,10 @@ async function openInstance(instance: OrchestrationInstance): Promise<void> {
   } finally {
     loading.value = false;
   }
+}
+
+function openInstance(instance: OrchestrationInstance): Promise<void> {
+  return openInstanceById(instance.instanceId);
 }
 
 /**
@@ -450,6 +455,68 @@ function backToApps(): void {
   error.value = null;
 }
 
+/*
+ * Deep-link routing. The view is a pure function of `selectedApp` and `detail`,
+ * so `currentRoute` derives the URL from state, and `applyRoute` drives state
+ * from a URL. The two are kept from chasing each other by `syncingFromHash`:
+ * while a hash-driven navigation runs, the state->hash writer stands down.
+ */
+const currentRoute = computed<Route>(() => {
+  const app = selectedApp.value;
+  if (app === null) return { view: 'apps' };
+  if (detail.value !== null) {
+    return { view: 'instance', appKey: app.name, instanceId: detail.value.instanceId };
+  }
+  return { view: 'app', appKey: app.name };
+});
+
+let syncingFromHash = false;
+
+/** Drive app state to match a route parsed from the URL (deep link, back/forward). */
+async function applyRoute(route: Route): Promise<void> {
+  if (route.view === 'apps') {
+    backToApps();
+    return;
+  }
+  // Match on name — an app's globally unique DNS label, and our route key.
+  const app = apps.value.find((candidate) => candidate.name === route.appKey);
+  if (app === undefined) return; // unknown or not-yet-discovered app: leave the view as-is.
+
+  if (selectedApp.value?.id !== app.id) {
+    await openApp(app);
+    if (target.value === null) return; // openApp failed (e.g. 403); don't chase the instance.
+  }
+  if (route.view === 'instance') {
+    if (detail.value?.instanceId !== route.instanceId) await openInstanceById(route.instanceId);
+  } else if (detail.value !== null) {
+    detail.value = null;
+  }
+}
+
+// State -> URL. A real hash change pushes a history entry, so Back works.
+watch(currentRoute, (route) => {
+  if (syncingFromHash) return;
+  const hash = routeToHash(route);
+  if (window.location.hash !== hash) window.location.hash = hash;
+});
+
+// URL -> state, for back/forward and hand-edited links.
+async function onHashChange(): Promise<void> {
+  const route = parseHash(window.location.hash);
+  if (sameRoute(route, currentRoute.value)) return;
+  syncingFromHash = true;
+  try {
+    await applyRoute(route);
+  } finally {
+    syncingFromHash = false;
+  }
+}
+
+// A stable reference so add/removeEventListener target the same handler.
+function hashListener(): void {
+  void onHashChange();
+}
+
 function onFilters(next: Filters): void {
   filters.value = next;
   if (selectedApp.value !== null) filtersByApp.set(selectedApp.value.id, next);
@@ -477,10 +544,27 @@ function syncTimer(): void {
 }
 
 watch([autoRefresh, refreshSeconds, target], syncTimer);
-onUnmounted(stopTimer);
 
-onMounted(() => {
-  if (user.value !== null) void discover();
+onMounted(async () => {
+  // Discovery must finish before a deep link can resolve: applyRoute matches the
+  // URL's app against the discovered list. initAuth() (in main.ts) has already
+  // consumed and cleared any MSAL redirect hash, so what remains is our route.
+  if (user.value !== null) await discover();
+  const initial = parseHash(window.location.hash);
+  if (!sameRoute(initial, currentRoute.value)) {
+    syncingFromHash = true;
+    try {
+      await applyRoute(initial);
+    } finally {
+      syncingFromHash = false;
+    }
+  }
+  window.addEventListener('hashchange', hashListener);
+});
+
+onUnmounted(() => {
+  stopTimer();
+  window.removeEventListener('hashchange', hashListener);
 });
 </script>
 
@@ -501,9 +585,13 @@ onMounted(() => {
     <template v-else>
       <div v-if="error" class="banner error err">
         <div>{{ describeError(error) }}</div>
-        <button v-if="isPimRecoverable(error)" :disabled="busy" @click="refreshRights">
-          Refresh rights
-        </button>
+        <RefreshButton
+          v-if="isPimRecoverable(error)"
+          label="Refresh rights"
+          text="Refresh rights"
+          :busy="busy"
+          @refresh="refreshRights"
+        />
       </div>
 
       <AppList

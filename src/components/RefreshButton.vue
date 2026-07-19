@@ -4,6 +4,8 @@ defineProps<{
   label: string;
   /** Spins the icon while a refresh is in flight. */
   busy?: boolean;
+  /** Optional visible text; when set the button becomes an icon+label pill. */
+  text?: string;
 }>();
 
 const emit = defineEmits<{ refresh: [] }>();
@@ -18,7 +20,7 @@ function onClick(event: MouseEvent): void {
 <template>
   <button
     class="refreshbtn"
-    :class="{ spin: busy }"
+    :class="{ spin: busy, 'has-text': text !== undefined }"
     :aria-label="label"
     :title="label"
     :disabled="busy"
@@ -38,6 +40,7 @@ function onClick(event: MouseEvent): void {
       <path d="M21 12a9 9 0 1 1-2.64-6.36" />
       <path d="M21 3v6h-6" />
     </svg>
+    <span v-if="text !== undefined" class="txt">{{ text }}</span>
   </button>
 </template>
 
@@ -62,6 +65,19 @@ function onClick(event: MouseEvent): void {
   color: var(--text);
   border-color: var(--border);
   background: var(--bg-hover);
+}
+
+/* Icon+label pill: same glyph and spin, but wide enough to carry its meaning. */
+.refreshbtn.has-text {
+  width: auto;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 14px;
+  border-color: var(--border);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
 }
 
 .refreshbtn.spin svg {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { SignedInUser } from '../auth';
 import UserMenu from './UserMenu.vue';
+import RefreshButton from './RefreshButton.vue';
 
 defineProps<{
   user: SignedInUser | null;
@@ -32,14 +33,16 @@ defineEmits<{
         tool needs no re-login: it drops every cached key and forces a fresh
         token, so newly activated roles take effect within moments.
       -->
-      <button
-        class="primary refresh"
-        :disabled="busy"
+      <span
         title="Activated a PIM role? Drops cached keys, forces a fresh token, and re-runs discovery."
-        @click="$emit('refreshRights')"
       >
-        {{ busy ? 'Refreshing…' : 'Refresh rights' }}
-      </button>
+        <RefreshButton
+          label="Refresh rights"
+          text="Refresh rights"
+          :busy="busy"
+          @refresh="$emit('refreshRights')"
+        />
+      </span>
 
       <span
         v-if="keysInMemory > 0"
@@ -84,11 +87,6 @@ defineEmits<{
 
 .spacer {
   flex: 1;
-}
-
-.refresh {
-  height: 28px;
-  border-radius: 14px;
 }
 
 .keys {
