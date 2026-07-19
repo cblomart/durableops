@@ -124,6 +124,23 @@ test.describe('triage and instance list', () => {
     await expect(firstRowId).toHaveText('broken');
   });
 
+  /*
+   * The app-header refresh governs the whole view: triage, problems and the list
+   * all recompute from one fetch, so "Refresh now" must re-list the instances.
+   */
+  test('the app-header refresh button re-fetches the whole view', async ({ page }) => {
+    await stubAzure(page, { instances: [instance('i1', 'OrderSaga', 'Running')] });
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+    await expect(page.locator('tbody tr').first()).toBeVisible();
+
+    const [request] = await Promise.all([
+      page.waitForRequest((r) => /\/instances\?/.test(r.url())),
+      page.getByRole('button', { name: 'Refresh now' }).click(),
+    ]);
+    expect(request.method()).toBe('GET');
+  });
+
   test('copies an instance id to the clipboard', async ({ page, context }) => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write']);
     await stubAzure(page, { instances: [instance('copy-me', 'OrderSaga', 'Running')] });

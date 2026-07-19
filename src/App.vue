@@ -4,6 +4,7 @@ import TopBar from './components/TopBar.vue';
 import AppList from './components/AppList.vue';
 import InstanceList from './components/InstanceList.vue';
 import InstanceDetail from './components/InstanceDetail.vue';
+import RefreshButton from './components/RefreshButton.vue';
 import { emptyFilters, type Filters } from './filters';
 import { getArmToken, getSignedInUser, signIn, signOut, type SignedInUser } from './auth';
 import {
@@ -349,6 +350,24 @@ async function openInstance(instance: OrchestrationInstance): Promise<void> {
   }
 }
 
+/**
+ * Manual re-fetch of the whole app view. Triage, Problems and the instance list
+ * are all computed from `instances`, so one fetch refreshes all three; this backs
+ * the "Refresh now" button in the app header. Kept distinct from `loading` so the
+ * button spins only for an explicit refresh, not for load-more or the first open.
+ */
+const listRefreshing = ref(false);
+
+async function refreshList(): Promise<void> {
+  if (target.value === null || listRefreshing.value) return;
+  listRefreshing.value = true;
+  try {
+    await fetchInstances(false);
+  } finally {
+    listRefreshing.value = false;
+  }
+}
+
 /** Manual re-fetch of the open instance (the detail refresh button). */
 const detailRefreshing = ref(false);
 
@@ -520,6 +539,38 @@ onMounted(() => {
           <span class="sep" aria-hidden="true">›</span>
           <span class="crumb current">{{ selectedApp.name }}</span>
           <span class="faint rg mono">{{ selectedApp.resourceGroup }}</span>
+
+          <span class="spacer" />
+
+          <!--
+            One refresh governs the whole view: triage, problems and the list all
+            recompute from the same fetch. Manual "refresh now" plus an optional
+            auto-refresh on an interval, sat in the app header so their scope reads
+            as the page, not just the list below.
+          -->
+          <div class="viewrefresh" title="Refreshes triage, problems and the instance list">
+            <RefreshButton :busy="listRefreshing" label="Refresh now" @refresh="refreshList" />
+            <label class="auto">
+              <input
+                type="checkbox"
+                :checked="autoRefresh"
+                @change="autoRefresh = ($event.target as HTMLInputElement).checked"
+              />
+              Auto
+            </label>
+            <!-- Floor of 10s: this polls the app the operator has open. -->
+            <input
+              class="secs"
+              type="number"
+              min="10"
+              step="5"
+              :value="refreshSeconds"
+              :disabled="!autoRefresh"
+              aria-label="Refresh interval in seconds"
+              @change="refreshSeconds = Number(($event.target as HTMLInputElement).value)"
+            />
+            <span class="faint">s</span>
+          </div>
         </nav>
 
         <InstanceList
@@ -528,11 +579,7 @@ onMounted(() => {
           :filters="filters"
           :loading="loading"
           :has-more="continuationToken !== undefined"
-          :auto-refresh="autoRefresh"
-          :refresh-seconds="refreshSeconds"
           @update:filters="onFilters"
-          @update:auto-refresh="autoRefresh = $event"
-          @update:refresh-seconds="refreshSeconds = $event"
           @apply="fetchInstances(false)"
           @load-more="fetchInstances(true)"
           @select="openInstance"
@@ -595,5 +642,33 @@ main {
 
 .rg {
   font-size: 11px;
+}
+
+.crumbs .spacer {
+  flex: 1;
+}
+
+.viewrefresh {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.viewrefresh .auto {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.viewrefresh .secs {
+  width: 58px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
 }
 </style>

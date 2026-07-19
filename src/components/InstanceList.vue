@@ -18,14 +18,10 @@ const props = defineProps<{
   filters: Filters;
   loading: boolean;
   hasMore: boolean;
-  autoRefresh: boolean;
-  refreshSeconds: number;
 }>();
 
 const emit = defineEmits<{
   'update:filters': [filters: Filters];
-  'update:autoRefresh': [value: boolean];
-  'update:refreshSeconds': [value: number];
   select: [instance: OrchestrationInstance];
   loadMore: [];
   apply: [];
@@ -237,29 +233,6 @@ onBeforeUnmount(() => {
           {{ loading ? 'Loading…' : 'Apply' }}
         </button>
       </div>
-
-      <div class="refresh">
-        <label class="auto">
-          <input
-            type="checkbox"
-            :checked="autoRefresh"
-            @change="emit('update:autoRefresh', ($event.target as HTMLInputElement).checked)"
-          />
-          Auto-refresh
-        </label>
-        <!-- Floor of 10s: this polls every app in the fleet the operator has open. -->
-        <input
-          class="secs"
-          type="number"
-          min="10"
-          step="5"
-          :value="refreshSeconds"
-          :disabled="!autoRefresh"
-          aria-label="Refresh interval in seconds"
-          @change="emit('update:refreshSeconds', Number(($event.target as HTMLInputElement).value))"
-        />
-        <span class="faint">s</span>
-      </div>
     </div>
 
     <p v-if="loading && instances.length === 0" class="state muted">Loading instances…</p>
@@ -466,24 +439,6 @@ input[type='number'] {
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 4px 6px;
-}
-
-.refresh {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.auto {
-  flex-direction: row;
-  align-items: center;
-  gap: 5px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.secs {
-  width: 58px;
 }
 
 .state {
