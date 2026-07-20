@@ -1,8 +1,11 @@
 name: Deploy
 
+# Manual only. Infra + SPA deploys are not run on every push: that would
+# re-run a full `az deployment sub create` per commit and fight the operator's
+# own deploys. Trigger from the Actions tab when a deploy is actually intended.
+# (Wiring this to run needs a CI identity with subscription-scope rights and the
+# DURABLEOPS_SPA_CLIENT_ID secret — deliberately not granted; deploys stay manual.)
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       environment:
