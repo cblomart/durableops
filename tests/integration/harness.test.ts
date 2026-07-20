@@ -283,23 +283,38 @@ describe.skipIf(!configured)('live harness — actions transition instances', ()
    * restart is an undocumented route that 404s on older hosts), so a failure
    * here is a real signal about this harness, not a flaky test.
    */
-  it('rewinds a failed instance', async () => {
-    const id = await startScenario('FailOnActivity');
-    expect(await waitForStatus(target, id, 'Failed')).toBe('Failed');
+  // A fresh FailOnActivity instance must cold-start and run its activity before
+  // it reaches Failed; under queue contention that is well past the default 30s
+  // window, so these waits get a generous ceiling (120s) and the tests override
+  // the 60s config testTimeout to match.
+  const FAIL_ATTEMPTS = 80;
+  const FAIL_TIMEOUT = 150_000;
 
-    const rewound = await rewindInstance(target, id, UPN, 'integration: rewind it');
-    expect(rewound.ok).toBe(true);
+  it(
+    'rewinds a failed instance',
+    async () => {
+      const id = await startScenario('FailOnActivity');
+      expect(await waitForStatus(target, id, 'Failed', FAIL_ATTEMPTS)).toBe('Failed');
 
-    await purgeInstance(target, id); // best-effort cleanup
-  });
+      const rewound = await rewindInstance(target, id, UPN, 'integration: rewind it');
+      expect(rewound.ok).toBe(true);
 
-  it('restarts a failed instance from its original input', async () => {
-    const id = await startScenario('FailOnActivity');
-    expect(await waitForStatus(target, id, 'Failed')).toBe('Failed');
+      await purgeInstance(target, id); // best-effort cleanup
+    },
+    FAIL_TIMEOUT
+  );
 
-    const restarted = await restartInstance(target, id, false);
-    expect(restarted.ok).toBe(true);
+  it(
+    'restarts a failed instance from its original input',
+    async () => {
+      const id = await startScenario('FailOnActivity');
+      expect(await waitForStatus(target, id, 'Failed', FAIL_ATTEMPTS)).toBe('Failed');
 
-    await purgeInstance(target, id); // best-effort cleanup
-  });
+      const restarted = await restartInstance(target, id, false);
+      expect(restarted.ok).toBe(true);
+
+      await purgeInstance(target, id); // best-effort cleanup
+    },
+    FAIL_TIMEOUT
+  );
 });
