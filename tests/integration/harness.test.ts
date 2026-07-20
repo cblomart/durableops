@@ -64,10 +64,20 @@ describe.skipIf(!configured)('live harness', () => {
     }
   }, 120_000);
 
-  function instanceNamed(name: string): string {
+  /*
+   * Find a seeded instance by scenario name, optionally pinned to a status.
+   * The status filter matters for FailOnActivity: the rewind/restart tests seed
+   * their own FailOnActivity instances, so more than one can coexist and a plain
+   * name match could return a still-running one instead of the seeded failure.
+   */
+  function instanceNamed(name: string, status?: string): string {
     if (!instances.ok) throw new Error('listInstances failed');
-    const found = instances.value.instances.find((i) => i.name === name);
-    if (found === undefined) throw new Error(`No ${name} instance; start the harness scenarios`);
+    const found = instances.value.instances.find(
+      (i) => i.name === name && (status === undefined || i.runtimeStatus === status)
+    );
+    if (found === undefined) {
+      throw new Error(`No ${status ?? ''} ${name} instance; start the harness scenarios`);
+    }
     return found.instanceId;
   }
 
@@ -92,7 +102,9 @@ describe.skipIf(!configured)('live harness', () => {
 
   it('derives an inline error signature from the list payload alone', () => {
     if (!instances.ok) return;
-    const failed = instances.value.instances.find((i) => i.name === 'FailOnActivity');
+    const failed = instances.value.instances.find(
+      (i) => i.name === 'FailOnActivity' && i.runtimeStatus === 'Failed'
+    );
     expect(failed).toBeDefined();
     // The list row already carries the reason in `output` — no per-instance call.
     expect(instanceErrorSignature(failed!)).toContain('Simulated activity failure');
@@ -122,7 +134,7 @@ describe.skipIf(!configured)('live harness', () => {
   });
 
   it('reports FailOnActivity as Failed with a readable reason', async () => {
-    const detail = await getInstance(target, instanceNamed('FailOnActivity'));
+    const detail = await getInstance(target, instanceNamed('FailOnActivity', 'Failed'));
 
     expect(detail.ok).toBe(true);
     if (!detail.ok) return;
@@ -149,7 +161,7 @@ describe.skipIf(!configured)('live harness', () => {
   });
 
   it('preserves the complete raw event for every history entry', async () => {
-    const detail = await getInstance(target, instanceNamed('FailOnActivity'));
+    const detail = await getInstance(target, instanceNamed('FailOnActivity', 'Failed'));
     expect(detail.ok).toBe(true);
     if (!detail.ok) return;
     for (const event of detail.value.historyEvents) {
@@ -290,7 +302,16 @@ describe.skipIf(!configured)('live harness — actions transition instances', ()
   // window, so these waits get a generous ceiling (120s) and the tests override
   // the 60s config testTimeout to match.
   const FAIL_ATTEMPTS = 80;
-  const FAIL_TIMEOUT = 150_000;
+  const FAIL_TIMEOUT = 200_000;
+
+  // Rewind/restart re-run the instance, so it is live again afterwards. Force a
+  // terminal state and purge, or it lingers as a Running FailOnActivity that a
+  // later run's snapshot could pick up ahead of the seeded failure.
+  async function terminateAndPurge(id: string): Promise<void> {
+    await terminateInstance(target, id, UPN, 'integration: cleanup');
+    await waitForStatus(target, id, 'Terminated', 20);
+    await purgeInstance(target, id);
+  }
 
   it(
     'rewinds a failed instance',
@@ -301,7 +322,7 @@ describe.skipIf(!configured)('live harness — actions transition instances', ()
       const rewound = await rewindInstance(target, id, UPN, 'integration: rewind it');
       expect(rewound.ok).toBe(true);
 
-      await purgeInstance(target, id); // best-effort cleanup
+      await terminateAndPurge(id);
     },
     FAIL_TIMEOUT
   );
@@ -315,7 +336,7 @@ describe.skipIf(!configured)('live harness — actions transition instances', ()
       const restarted = await restartInstance(target, id, false);
       expect(restarted.ok).toBe(true);
 
-      await purgeInstance(target, id); // best-effort cleanup
+      await terminateAndPurge(id);
     },
     FAIL_TIMEOUT
   );
