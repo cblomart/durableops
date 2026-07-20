@@ -23,6 +23,8 @@ import {
   resumeInstance,
   raiseEvent,
   purgeInstance,
+  rewindInstance,
+  restartInstance,
   type DurableTarget,
 } from '../../src/api/durable';
 import {
@@ -271,5 +273,33 @@ describe.skipIf(!configured)('live harness — actions transition instances', ()
     // After purge the instance is gone: getInstance now 404s.
     const gone = await getInstance(target, id);
     expect(gone.ok).toBe(false);
+  });
+
+  /*
+   * Rewind and restart both act on a *failed* instance. FailOnActivity always
+   * fails, so after either the instance re-runs and fails again — the assertion
+   * is that the real runtime accepts the reactive call end to end. Both routes
+   * carry runtime caveats (rewind is a deprecated, Azure-Storage-only feature;
+   * restart is an undocumented route that 404s on older hosts), so a failure
+   * here is a real signal about this harness, not a flaky test.
+   */
+  it('rewinds a failed instance', async () => {
+    const id = await startScenario('FailOnActivity');
+    expect(await waitForStatus(target, id, 'Failed')).toBe('Failed');
+
+    const rewound = await rewindInstance(target, id, UPN, 'integration: rewind it');
+    expect(rewound.ok).toBe(true);
+
+    await purgeInstance(target, id); // best-effort cleanup
+  });
+
+  it('restarts a failed instance from its original input', async () => {
+    const id = await startScenario('FailOnActivity');
+    expect(await waitForStatus(target, id, 'Failed')).toBe('Failed');
+
+    const restarted = await restartInstance(target, id, false);
+    expect(restarted.ok).toBe(true);
+
+    await purgeInstance(target, id); // best-effort cleanup
   });
 });

@@ -1,0 +1,46 @@
+name: SAST
+
+# Static analysis with Semgrep OSS. Replaces CodeQL, which cannot run on a
+# private repository without paid GitHub Advanced Security. Semgrep OSS pulls
+# its rulesets from the public registry and needs no token, so it works here.
+#
+# Scope is deliberately narrow: security rules over our own source. Correctness
+# and style are already enforced by ESLint (--max-warnings 0) in the CI workflow,
+# so this stays high-signal rather than duplicating the linter.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, so newly published rules run against unchanged code too.
+    - cron: '17 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sast-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  semgrep:
+    name: Semgrep (OSS security scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install semgrep
+
+      # --error fails the build on any finding. Security-focused rulesets only,
+      # over our own TypeScript; node_modules and dist are ignored by default.
+      - name: Semgrep scan
+        run: |
+          semgrep scan --error \
+            --config p/security-audit \
+            --config p/secrets \
+            src tests
