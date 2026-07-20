@@ -1,0 +1,62 @@
+name: Deploy to GitHub Pages
+
+# Manual only, and dormant until Pages is enabled for the repo
+# (Settings -> Pages -> Source: "GitHub Actions"). A private repo needs GitHub
+# Pro for Pages; a public repo gets it free.
+#
+# Publishes the MULTI-TENANT build: any Entra organisation's users can sign in.
+# The app still only ever acts as the signed-in user with their own Azure RBAC,
+# so this widens who can sign in, not what the app can do. Deploys with the
+# built-in GITHUB_TOKEN — no cloud credentials, unlike the Azure SWA deploy.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (multi-tenant, /durableops/ base)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      # A project site is served under /durableops/, so assets need that base.
+      # Hash routing is unaffected by the base path.
+      - run: npx vite build --base=/durableops/
+
+      # Runtime config for a public, multi-tenant deploy: client id only (no
+      # tenant — sign-in goes through /organizations). The client id is a public
+      # identifier by design, so it lives in a repo variable, not a secret.
+      - name: Generate config.json (multi-tenant)
+        run: |
+          jq -n --arg clientId "${{ vars.DURABLEOPS_CLIENT_ID }}" \
+            '{clientId: $clientId, multitenant: true}' > dist/config.json
+          jq -e '.clientId != ""' dist/config.json > /dev/null
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

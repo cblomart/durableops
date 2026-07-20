@@ -60,11 +60,14 @@ function testAuth(): TestAuth | undefined {
 }
 
 function buildMsalConfig(): Configuration {
-  const { tenantId, clientId, redirectUri } = getConfig();
+  const { tenantId, clientId, redirectUri, multitenant } = getConfig();
+  // Multi-tenant signs in via /organizations so any work/school tenant is
+  // accepted; single-tenant pins the authority to the one configured tenant.
+  const authority = `https://login.microsoftonline.com/${multitenant === true ? 'organizations' : tenantId}`;
   return {
     auth: {
       clientId,
-      authority: `https://login.microsoftonline.com/${tenantId}`,
+      authority,
       redirectUri: redirectUri ?? window.location.origin,
       postLogoutRedirectUri: redirectUri ?? window.location.origin,
     },

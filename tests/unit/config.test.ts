@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   loadConfig,
   getConfig,
+  adminConsentUrl,
   __setConfigForTests,
   ARM_SCOPE,
   ARG_API_VERSION,
@@ -94,5 +95,55 @@ describe('getConfig', () => {
     await loadConfig(vi.fn().mockResolvedValue(jsonResponse(VALID)));
 
     expect(getConfig()).toEqual(VALID);
+  });
+});
+
+describe('multi-tenant config', () => {
+  it('makes tenantId optional when multitenant is true', async () => {
+    const body = { clientId: 'client-x', multitenant: true };
+    const config = await loadConfig(vi.fn().mockResolvedValue(jsonResponse(body)));
+
+    expect(config).toEqual({ tenantId: '', clientId: 'client-x', multitenant: true });
+  });
+
+  it('still requires tenantId for a single-tenant deploy', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ clientId: 'client-x' }));
+    await expect(loadConfig(fetchMock)).rejects.toThrow(/tenantId/);
+  });
+
+  it('rejects a non-boolean multitenant', async () => {
+    const body = { ...VALID, multitenant: 'yes' };
+    await expect(loadConfig(vi.fn().mockResolvedValue(jsonResponse(body)))).rejects.toThrow(
+      /multitenant/
+    );
+  });
+});
+
+describe('adminConsentUrl', () => {
+  it('targets the named tenant for a single-tenant deploy', async () => {
+    await loadConfig(vi.fn().mockResolvedValue(jsonResponse(VALID)));
+
+    const url = new URL(adminConsentUrl('https://ops.example.com'));
+    expect(url.pathname).toBe('/00000000-0000-0000-0000-000000000000/adminconsent');
+    expect(url.searchParams.get('client_id')).toBe('11111111-1111-1111-1111-111111111111');
+    expect(url.searchParams.get('redirect_uri')).toBe('https://ops.example.com');
+  });
+
+  it('targets /organizations for a multi-tenant deploy', async () => {
+    const body = { clientId: 'client-x', multitenant: true };
+    await loadConfig(vi.fn().mockResolvedValue(jsonResponse(body)));
+
+    const url = new URL(adminConsentUrl('https://cblomart.github.io/durableops/'));
+    expect(url.pathname).toBe('/organizations/adminconsent');
+    expect(url.searchParams.get('client_id')).toBe('client-x');
+  });
+
+  it('prefers a configured redirectUri over the passed origin', async () => {
+    await loadConfig(
+      vi.fn().mockResolvedValue(jsonResponse({ ...VALID, redirectUri: 'https://fixed.example' }))
+    );
+
+    const url = new URL(adminConsentUrl('https://ignored.example'));
+    expect(url.searchParams.get('redirect_uri')).toBe('https://fixed.example');
   });
 });

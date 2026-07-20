@@ -6,8 +6,29 @@ test.describe('signed out', () => {
     await stubAzure(page);
     await page.goto('/');
 
-    await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
     await expect(page.getByRole('table')).toHaveCount(0);
+  });
+
+  /*
+   * Onboarding: the landing must explain the access model and give an admin a
+   * one-click way to consent for the whole tenant (the multi-tenant case).
+   */
+  test('explains access and offers a tenant admin-consent link', async ({ page }) => {
+    await stubAzure(page);
+    await page.goto('/');
+
+    await expect(
+      page.getByRole('heading', { name: /Troubleshoot Azure Durable Functions/ })
+    ).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Sign in with Microsoft' })).toBeVisible();
+    await expect(page.getByText(/Granting access/)).toBeVisible();
+
+    const consent = page.getByRole('link', { name: 'Grant admin consent' });
+    const href = await consent.getAttribute('href');
+    expect(href).toContain('login.microsoftonline.com');
+    expect(href).toContain('/adminconsent?');
+    expect(href).toContain('client_id=11111111-1111-1111-1111-111111111111');
   });
 });
 
@@ -544,7 +565,7 @@ test.describe('account menu', () => {
     await stubAzure(page);
     await page.goto('/');
 
-    await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: /^Account:/ })).toHaveCount(0);
   });
 

@@ -205,7 +205,26 @@ npm run build        # -> dist/
 
 For local development: `cp public/config.json.example public/config.json` and fill it in.
 
-Infrastructure lives in [`infra/`](infra/) as Bicep and is deployed from GitHub Actions using **OIDC federated credentials** (`azure/login`) — no long-lived cloud secrets in the repo.
+Infrastructure lives in [`infra/`](infra/) as Bicep and is deployed from GitHub Actions using **OIDC federated credentials** (`azure/login`) — no long-lived cloud secrets in the repo. The Azure deploy workflow is **manual** (`workflow_dispatch`); it is not wired to run on every push.
+
+### Host it yourself
+
+DurableOps is static files with runtime config, so any organisation can host its own copy on whatever serves static assets (Azure Static Web Apps, blob static website, Nginx, GitHub Pages, …). Two ways to point it at Entra:
+
+- **Your own app registration (recommended):** create a single-tenant SPA registration as in [Setup §1](#1-entra-app-registration-the-only-one--for-the-spa-itself), then set `tenantId` + `clientId` in `config.json`. Nothing is shared with anyone else.
+- **Consent to an existing multi-tenant deployment:** if you use a shared multi-tenant instance (see below), a tenant admin grants consent once and your users sign in against it — no registration of your own. The app still only ever acts as each signed-in user, bounded by their Azure RBAC.
+
+### Multi-tenant deployment (e.g. GitHub Pages)
+
+For a single public instance that any organisation can use, set `multitenant: true` and omit `tenantId` — sign-in then goes through the `/organizations` authority and the tenant is discovered from the signed-in account:
+
+```json
+{ "clientId": "<durableops-spa-client-id>", "multitenant": true }
+```
+
+The app registration must be **multi-tenant** (`signInAudience: AzureADMultipleOrgs`). This widens *who* can sign in, not what the app can do: there is no client secret and no app-only permission, so it can only ever act as the delegated user under their own RBAC. Each organisation's users (or an admin, via the landing page's **Grant admin consent** button) consent to the Azure Service Management permission once.
+
+A ready **[GitHub Pages workflow](.github/workflows/pages.yml)** builds this multi-tenant variant under the `/durableops/` base path and deploys with the built-in `GITHUB_TOKEN` (no cloud credentials). It is `workflow_dispatch`-only and dormant until you enable Pages (**Settings → Pages → Source: GitHub Actions**; a private repo needs GitHub Pro, a public repo is free).
 
 ### CSP and custom domains
 

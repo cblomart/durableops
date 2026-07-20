@@ -12,10 +12,21 @@
  */
 
 export interface AppConfig {
-  /** Entra tenant ID (GUID) or domain. Single-tenant by design; multi-tenant is out of scope for v1. */
+  /**
+   * Entra tenant ID (GUID) or domain for a single-tenant deployment. Unused when
+   * `multitenant` is true — sign-in then goes through the `/organizations`
+   * authority and the tenant is discovered from the signed-in account.
+   */
   tenantId: string;
   /** Application (client) ID of the DurableOps SPA registration. */
   clientId: string;
+  /**
+   * Multi-tenant deployment: any Entra organisation's users can sign in (the app
+   * registration must be AzureADMultipleOrgs). The app still only ever acts as
+   * the signed-in user with their own Azure RBAC — this only widens *who* may
+   * sign in, not what the app can do. Used by the public GitHub Pages build.
+   */
+  multitenant?: boolean;
   /**
    * Redirect URI registered on the SPA platform of the app registration.
    * Defaults to the current origin, which is correct for every normal deploy.
@@ -63,19 +74,52 @@ function optional(record: Record<string, unknown>, key: string): string | undefi
   return value;
 }
 
+/** An optional boolean: absent is fine, wrong type is not. */
+function optionalBool(record: Record<string, unknown>, key: string): boolean | undefined {
+  const value = record[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== 'boolean') {
+    throw new Error(`config.json: "${key}" must be a boolean when present`);
+  }
+  return value;
+}
+
 function validate(raw: unknown): AppConfig {
   if (typeof raw !== 'object' || raw === null) {
     throw new Error('config.json must be a JSON object');
   }
   const record = raw as Record<string, unknown>;
 
+  const multitenant = optionalBool(record, 'multitenant') === true;
   const redirectUri = optional(record, 'redirectUri');
+  // A single-tenant deploy must name its tenant; a multi-tenant one signs in via
+  // /organizations, so tenantId is not needed and defaults to empty.
+  const tenantId = multitenant
+    ? (optional(record, 'tenantId') ?? '')
+    : required(record, 'tenantId');
 
   return {
-    tenantId: required(record, 'tenantId'),
+    tenantId,
     clientId: required(record, 'clientId'),
+    ...(multitenant ? { multitenant: true } : {}),
     ...(redirectUri === undefined ? {} : { redirectUri }),
   };
+}
+
+/**
+ * The Entra admin-consent URL for this app: a Global/Privileged Role admin opens
+ * it to grant the Azure Service Management permission for their whole tenant, so
+ * users who cannot self-consent can still be onboarded. Built from the client ID
+ * — no secret involved. `/organizations` when multi-tenant, else the named tenant.
+ */
+export function adminConsentUrl(origin: string): string {
+  const config = getConfig();
+  const authority = config.multitenant === true ? 'organizations' : config.tenantId;
+  const params = new URLSearchParams({
+    client_id: config.clientId,
+    redirect_uri: config.redirectUri ?? origin,
+  });
+  return `https://login.microsoftonline.com/${authority}/adminconsent?${params.toString()}`;
 }
 
 /**

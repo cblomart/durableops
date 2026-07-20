@@ -8,6 +8,7 @@ import RefreshButton from './components/RefreshButton.vue';
 import CopyButton from './components/CopyButton.vue';
 import { emptyFilters, type Filters } from './filters';
 import { getArmToken, getSignedInUser, signIn, signOut, type SignedInUser } from './auth';
+import { adminConsentUrl } from './config';
 import {
   cachedKeyCount,
   checkOperabilityForApps,
@@ -212,6 +213,9 @@ function setError(cause: unknown): void {
 
 /** This app's own origin — the value an operator adds to a blocked app's CORS list. */
 const appOrigin = window.location.origin;
+
+/** Tenant admin-consent URL, for the signed-out landing's "grant access" button. */
+const adminConsentHref = adminConsentUrl(appOrigin);
 
 /** A ready-to-run command to allow this origin on the currently open app. */
 const corsCommand = computed(() => {
@@ -631,7 +635,43 @@ onUnmounted(() => {
   />
 
   <main>
-    <p v-if="user === null" class="signin muted">Sign in with your Azure account to get started.</p>
+    <section v-if="user === null" class="landing">
+      <h1 class="ltitle">Troubleshoot Azure Durable Functions at scale</h1>
+      <p class="lsub">
+        DurableOps runs entirely in your browser. It has no backend and no secrets: every call is
+        made with your own Azure sign-in, so Azure enforces your real permissions on every request.
+      </p>
+
+      <button class="primary big" @click="signIn">Sign in with Microsoft</button>
+
+      <!--
+        Onboarding, not a wall of text: the three things a first-time user (or the
+        admin they have to ask) needs to know to actually get in.
+      -->
+      <div class="access">
+        <h2>Granting access</h2>
+        <ol>
+          <li>
+            <strong>Signing in</strong> asks you to consent to the Azure Service Management
+            permission — that is what lets DurableOps act as you against your subscriptions. It
+            grants the app nothing of its own.
+          </li>
+          <li>
+            <strong>If your organisation requires admin approval</strong>, a Global Administrator or
+            Privileged Role Administrator can grant it once for everyone, so individual users do not
+            each hit a consent wall:
+            <a class="consentbtn" :href="adminConsentHref" target="_blank" rel="noopener noreferrer"
+              >Grant admin consent</a
+            >
+          </li>
+          <li>
+            <strong>You still need Azure roles</strong> to operate apps — consent alone grants no
+            access to any resource. Activate an eligible role through PIM, then use “Refresh
+            rights”.
+          </li>
+        </ol>
+      </div>
+    </section>
 
     <template v-else>
       <div v-if="error" class="banner error err">
@@ -753,9 +793,76 @@ main {
   padding-bottom: 24px;
 }
 
-.signin {
-  padding: 32px 16px;
-  max-width: 64ch;
+.landing {
+  padding: 40px 16px;
+  max-width: 68ch;
+}
+
+.ltitle {
+  font-size: 24px;
+  font-weight: 600;
+  margin: 0 0 10px;
+}
+
+.lsub {
+  color: var(--text-dim);
+  margin: 0 0 20px;
+  line-height: 1.5;
+}
+
+.primary.big {
+  font-size: 14px;
+  padding: 8px 16px;
+  border-radius: 6px;
+}
+
+.access {
+  margin-top: 28px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-raised);
+}
+
+.access h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-faint);
+  margin: 0 0 10px;
+}
+
+.access ol {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.access li {
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.access strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.consentbtn {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.consentbtn:hover {
+  background: var(--accent-dim);
 }
 
 .err {
