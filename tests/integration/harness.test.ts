@@ -46,9 +46,11 @@ describe.skipIf(!configured)('live harness', () => {
 
   beforeAll(async () => {
     // Poll until the fast-failing scenario has actually reached Failed, so a
-    // freshly-seeded harness does not race the snapshot (FailOnActivity fails a
-    // couple of seconds after start).
-    for (let i = 0; i < 20; i++) {
+    // freshly-seeded harness does not race the snapshot. The window is generous
+    // (105s): on a cold consumption-plan app the first orchestration pays the
+    // cold-start cost, so "a couple of seconds after start" can be well over a
+    // minute — observed live, where a 30s window snapshotted it still Running.
+    for (let i = 0; i < 70; i++) {
       instances = await listInstances(target, { top: 50 });
       if (
         instances.ok &&
@@ -60,7 +62,7 @@ describe.skipIf(!configured)('live harness', () => {
       }
       await new Promise((r) => setTimeout(r, 1500));
     }
-  }, 40_000);
+  }, 120_000);
 
   function instanceNamed(name: string): string {
     if (!instances.ok) throw new Error('listInstances failed');
