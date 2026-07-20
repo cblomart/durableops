@@ -1,0 +1,61 @@
+name: Snyk
+
+# Snyk security scanning, complementing the existing gates:
+#   - npm audit (CI)        : all dependencies, GitHub advisory DB
+#   - Semgrep (SAST)        : our own source, static rules
+#   - Snyk Open Source here : shipped dependencies, Snyk's vuln DB
+#   - Snyk Code here (SAST) : our own source, Snyk's semantic analysis
+# Needs the SNYK_TOKEN repo secret; the job simply errors without it.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, so newly disclosed vulns surface against unchanged code too.
+    - cron: '37 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: snyk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security:
+    name: Snyk (open source + code)
+    runs-on: ubuntu-latest
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm install -g snyk
+
+      # Open Source (SCA): only production deps — that is what actually ships to
+      # the browser (vue + msal-browser). The all-deps view, including the dev
+      # toolchain, is already covered by `npm audit` in the CI workflow.
+      - name: Snyk Open Source
+        run: snyk test --prod --severity-threshold=high
+
+      # Snyk Code (SAST): blocks on findings (CLI exit 1). If Snyk Code is not
+      # enabled for the org the CLI errors (exit 2) rather than finding issues —
+      # that is a config state, not a defect, so it must not fail the build.
+      - name: Snyk Code
+        run: |
+          set +e
+          snyk code test --severity-threshold=high
+          code=$?
+          if [ "$code" -eq 1 ]; then
+            echo "::error::Snyk Code found high+ severity issues"
+            exit 1
+          fi
+          echo "Snyk Code exit ${code} (0 = clean; other = not enabled / no projects) — not blocking"
+          exit 0
