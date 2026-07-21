@@ -13,14 +13,17 @@ param location string
 @description('Tags applied to the resource.')
 param tags object
 
+@description('Hosting tier. Free is fine for dev/test; Standard adds a 99.95% SLA, an enterprise-grade edge (managed Azure Front Door) and custom domains — chosen for prod, which is advertised to a worldwide audience.')
+@allowed(['Free', 'Standard'])
+param sku string = 'Free'
+
 resource staticSite 'Microsoft.Web/staticSites@2023-12-01' = {
   name: name
   location: location
   tags: tags
   sku: {
-    // Free is sufficient: this serves a handful of static assets and has no API.
-    name: 'Free'
-    tier: 'Free'
+    name: sku
+    tier: sku
   }
   properties: {
     // The build is produced by GitHub Actions and pushed with the SWA deploy

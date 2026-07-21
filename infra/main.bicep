@@ -21,6 +21,10 @@ param location string = 'westeurope'
 @description('Deploy the integration-test harness function app. Keep off in prod.')
 param deployTestHarness bool = true
 
+@description('Static Web App tier. Defaults to Standard for prod (SLA + Front Door edge + custom domains) and Free elsewhere, so dev/test never sits on the paid prod plan.')
+@allowed(['Free', 'Standard'])
+param swaSku string = environment == 'prod' ? 'Standard' : 'Free'
+
 @description('Create the DurableOps Operator custom role. Needs Owner or User Access Administrator on the subscription; leave off if you lack those rights or manage roles elsewhere.')
 param deployOperatorRole bool = false
 
@@ -66,6 +70,7 @@ module staticWebApp 'modules/swa.bicep' = {
     name: 'stapp-durableops-${environment}-${nameSuffix}'
     location: location
     tags: commonTags
+    sku: swaSku
   }
 }
 
