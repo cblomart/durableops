@@ -1,0 +1,78 @@
+name: Deploy prod
+
+# CD for the production app at durableops.app. Fires when a GitHub Release is
+# published — which release-please cuts on merge of its release PR — so a prod
+# release is a deliberate act (merge the release PR), performed by the pipeline,
+# never a manual laptop deploy. workflow_dispatch is kept for re-runs.
+#
+# No stored deploy token: OIDC fetches the SWA token at deploy time, matching the
+# repo's no-long-lived-cloud-secret rule. The identity holds Website Contributor
+# on rg-durableops-prod only.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy to prod
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      # Multi-tenant prod config: public client id + the operator imprint, both
+      # from repo variables (neither is a secret — the client id is public and
+      # the imprint is shown on the About page). No tenantId: sign-in is via
+      # /organizations.
+      - name: Generate config.json
+        run: |
+          jq -n \
+            --arg clientId "${{ vars.DURABLEOPS_CLIENT_ID }}" \
+            --arg name "${{ vars.DURABLEOPS_OPERATOR_NAME }}" \
+            --arg contact "${{ vars.DURABLEOPS_OPERATOR_CONTACT }}" \
+            '{clientId: $clientId, multitenant: true, operatorName: $name, operatorContact: $contact}' \
+            > dist/config.json
+          jq -e '.clientId != ""' dist/config.json > /dev/null
+          cat dist/config.json
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Fetch the SWA deploy token
+        id: token
+        run: |
+          token=$(az staticwebapp secrets list \
+            --name stapp-durableops-prod-6l5ei --resource-group rg-durableops-prod \
+            --query "properties.apiKey" -o tsv)
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+
+      - uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ steps.token.outputs.token }}
+          action: upload
+          app_location: dist
+          skip_app_build: true
+          skip_api_build: true
+
+      - run: echo "Deployed prod → https://durableops.app"
