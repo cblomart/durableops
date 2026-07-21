@@ -21,7 +21,8 @@ test.describe('signed out', () => {
     await expect(
       page.getByRole('heading', { name: /Troubleshoot Azure Durable Functions/ })
     ).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Sign in with Microsoft' })).toBeVisible();
+    // The only sign-in affordance is the top-bar pill (no redundant landing button).
+    await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
     await expect(page.getByText(/Granting access/)).toBeVisible();
 
     const consent = page.getByRole('link', { name: 'Grant admin consent' });

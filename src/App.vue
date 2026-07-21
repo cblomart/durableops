@@ -646,9 +646,8 @@ onUnmounted(() => {
       <p class="lsub">
         DurableOps runs entirely in your browser. It has no backend and no secrets: every call is
         made with your own Azure sign-in, so Azure enforces your real permissions on every request.
+        Use <strong>Sign in</strong>, top right, to get started.
       </p>
-
-      <button class="primary big" @click="signIn">Sign in with Microsoft</button>
 
       <!--
         Onboarding, not a wall of text: the three things a first-time user (or the
@@ -671,9 +670,9 @@ onUnmounted(() => {
             >
           </li>
           <li>
-            <strong>You still need Azure roles</strong> to operate apps — consent alone grants no
-            access to any resource. Activate an eligible role through PIM, then use “Refresh
-            rights”.
+            <strong>You still need Azure permissions</strong> to operate apps — consent alone grants
+            no access to any resource. If your access is permanent you are ready to go; if it is
+            granted just-in-time through PIM, activate the role, then use “Refresh rights”.
           </li>
         </ol>
       </div>
@@ -806,6 +805,8 @@ onUnmounted(() => {
 
 <style scoped>
 main {
+  /* Grow to fill the column so the status bar is pushed to the bottom. */
+  flex: 1 0 auto;
   padding-bottom: 24px;
 }
 
@@ -824,12 +825,6 @@ main {
   color: var(--text-dim);
   margin: 0 0 20px;
   line-height: 1.5;
-}
-
-.primary.big {
-  font-size: 14px;
-  padding: 8px 16px;
-  border-radius: 6px;
 }
 
 .access {
@@ -1002,6 +997,7 @@ main {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
   padding: 5px 14px;
   border-top: 1px solid var(--border);
   background: var(--bg-raised);
