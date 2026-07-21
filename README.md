@@ -205,6 +205,18 @@ npm run build        # -> dist/
 
 For local development: `cp public/config.json.example public/config.json` and fill it in.
 
+**Operator legal notice (imprint).** For a **publicly-offered** instance, EU/Belgian law (e-Commerce Directive; Belgian _Code de droit économique_, Book XII) requires the provider to be identifiable. Set these optional fields — they render, quietly, at the foot of the in-app **About** dialog and are omitted when absent (fine for a private/internal instance):
+
+```json
+{
+  "operatorName": "Acme BV",
+  "operatorContact": "legal@acme.example",
+  "operatorId": "BE0123.456.789 · VAT BE0123.456.789"
+}
+```
+
+Operated by an individual? A name and contact suffice. Operated by a business? Include the enterprise (BCE/KBO) and VAT numbers.
+
 Infrastructure lives in [`infra/`](infra/) as Bicep and is deployed from GitHub Actions using **OIDC federated credentials** (`azure/login`) — no long-lived cloud secrets in the repo. The Azure deploy workflow is **manual** (`workflow_dispatch`); it is not wired to run on every push.
 
 ### Host it yourself

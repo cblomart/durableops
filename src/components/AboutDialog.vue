@@ -39,10 +39,14 @@ onBeforeUnmount(() => {
           <p>
             DurableOps has no backend and collects nothing. It runs entirely in your browser and
             talks only to Microsoft (sign-in) and Azure (your subscriptions), using your own
-            delegated token. Nothing about your session is sent to whoever operates this instance.
-            The only things stored on your device are your sign-in token (kept by Microsoft's
-            library, in tab-scoped session storage) and your list of favourite apps (local storage)
-            — both strictly necessary, so there are no tracking cookies and no consent banner.
+            delegated token; nothing about your session reaches whoever operates this instance. It
+            <strong>sets no cookies</strong> and uses no analytics or tracking. The only things kept
+            on your device are your sign-in session (held by Microsoft's library in tab-scoped
+            session storage) and your list of favourite apps (local storage) — both
+            <strong>strictly necessary</strong> to provide the tool you asked for, which is the
+            category the EU/Belgian ePrivacy rules exempt from consent, so no cookie banner is
+            required. Signing in sends you to Microsoft, which sets its own strictly-necessary
+            cookies on its domain.
           </p>
         </section>
 
@@ -180,7 +184,10 @@ onBeforeUnmount(() => {
   color: var(--text);
 }
 
+/* Deliberately the quietest thing here: the operator imprint the law wants
+   present, but not prominent. */
 .imprint {
-  color: var(--text);
+  font-size: 11px;
+  color: var(--text-faint);
 }
 </style>
