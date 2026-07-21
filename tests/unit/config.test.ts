@@ -57,6 +57,18 @@ describe('loadConfig', () => {
     await expect(loadConfig(fetchMock)).resolves.toEqual(withRedirect);
   });
 
+  it('keeps the optional operator legal fields when present', async () => {
+    const withOperator = {
+      ...VALID,
+      operatorName: 'Acme BV',
+      operatorContact: 'legal@acme.example',
+      operatorId: 'BE0123.456.789',
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(withOperator));
+
+    await expect(loadConfig(fetchMock)).resolves.toEqual(withOperator);
+  });
+
   it('caches after the first load and does not re-fetch', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(VALID));
 

@@ -32,6 +32,17 @@ export interface AppConfig {
    * Defaults to the current origin, which is correct for every normal deploy.
    */
   redirectUri?: string;
+  /**
+   * Legal notice for the party operating THIS deployment, shown on the About
+   * page. Required in the EU/Belgium for a publicly-offered service (identity of
+   * the provider); left empty for a private/internal instance. Each self-hoster
+   * is a different operator, so these live in config rather than the bundle.
+   */
+  operatorName?: string;
+  /** Legal contact for the operator — an email or a URL. */
+  operatorContact?: string;
+  /** Company registration line if operated by a business, e.g. "BE0123.456.789 · VAT BE0123.456.789". */
+  operatorId?: string;
 }
 
 export const ARM_SCOPE = 'https://management.azure.com/user_impersonation';
@@ -98,11 +109,18 @@ function validate(raw: unknown): AppConfig {
     ? (optional(record, 'tenantId') ?? '')
     : required(record, 'tenantId');
 
+  const operatorName = optional(record, 'operatorName');
+  const operatorContact = optional(record, 'operatorContact');
+  const operatorId = optional(record, 'operatorId');
+
   return {
     tenantId,
     clientId: required(record, 'clientId'),
     ...(multitenant ? { multitenant: true } : {}),
     ...(redirectUri === undefined ? {} : { redirectUri }),
+    ...(operatorName === undefined ? {} : { operatorName }),
+    ...(operatorContact === undefined ? {} : { operatorContact }),
+    ...(operatorId === undefined ? {} : { operatorId }),
   };
 }
 

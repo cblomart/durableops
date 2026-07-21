@@ -15,7 +15,8 @@ export default defineConfig([
   {
     languageOptions: {
       // This is a browser-only app: no Node globals should resolve in src/.
-      globals: globals.browser,
+      // The two __*__ constants are injected at build time (see vite.config.ts).
+      globals: { ...globals.browser, __APP_VERSION__: 'readonly', __BUILD_SHA__: 'readonly' },
       parserOptions: {
         projectService: true,
         tsconfigRootDir: import.meta.dirname,

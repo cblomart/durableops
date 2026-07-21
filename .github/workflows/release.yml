@@ -1,0 +1,28 @@
+name: Release
+
+# Automatic semantic versioning via release-please (a GitHub Action — no runtime
+# dependency). It watches Conventional Commits on main and maintains an open
+# "release" PR that bumps package.json + CHANGELOG.md to the next semver:
+#   fix:  -> patch,  feat: -> minor,  feat!/BREAKING CHANGE -> major.
+# Merging that PR tags vX.Y.Z and cuts a GitHub Release. The build reads the
+# version from package.json, so the footer then shows the released version.
+#
+# Deploys stay separate and manual — a tag does not auto-deploy prod.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4

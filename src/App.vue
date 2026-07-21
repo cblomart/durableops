@@ -6,6 +6,7 @@ import InstanceList from './components/InstanceList.vue';
 import InstanceDetail from './components/InstanceDetail.vue';
 import RefreshButton from './components/RefreshButton.vue';
 import CopyButton from './components/CopyButton.vue';
+import AboutDialog from './components/AboutDialog.vue';
 import { emptyFilters, type Filters } from './filters';
 import { getArmToken, getSignedInUser, signIn, signOut, type SignedInUser } from './auth';
 import { adminConsentUrl } from './config';
@@ -216,6 +217,11 @@ const appOrigin = window.location.origin;
 
 /** Tenant admin-consent URL, for the signed-out landing's "grant access" button. */
 const adminConsentHref = adminConsentUrl(appOrigin);
+
+/** Build identity for the status bar. Frozen into the bundle at build time. */
+const appVersion = __APP_VERSION__;
+const buildSha = __BUILD_SHA__;
+const showAbout = ref(false);
 
 /** A ready-to-run command to allow this origin on the currently open app. */
 const corsCommand = computed(() => {
@@ -786,6 +792,16 @@ onUnmounted(() => {
       </template>
     </template>
   </main>
+
+  <!-- Build identity + the legal/About entry point, out of the way at the foot. -->
+  <footer class="statusbar">
+    <span class="ver mono">v{{ appVersion }}</span>
+    <span class="sha mono faint" :title="`build ${buildSha}`">{{ buildSha }}</span>
+    <span class="spacer" />
+    <button class="aboutlink" @click="showAbout = true">About &amp; legal</button>
+  </footer>
+
+  <AboutDialog v-if="showAbout" @close="showAbout = false" />
 </template>
 
 <style scoped>
@@ -980,5 +996,44 @@ main {
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 4px 6px;
+}
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-raised);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.statusbar .ver {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.statusbar .sha {
+  font-size: 10px;
+}
+
+.statusbar .spacer {
+  flex: 1;
+}
+
+.aboutlink {
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 4px;
+}
+
+.aboutlink:hover {
+  color: var(--text);
+  text-decoration: underline;
 }
 </style>

@@ -30,6 +30,29 @@ test.describe('signed out', () => {
     expect(href).toContain('/adminconsent?');
     expect(href).toContain('client_id=11111111-1111-1111-1111-111111111111');
   });
+
+  /*
+   * The status bar carries the released version, and About holds the legal bits:
+   * licence, warranty disclaimer, and the no-data-collected privacy statement.
+   */
+  test('shows a version and an About dialog with licence, disclaimer and privacy', async ({
+    page,
+  }) => {
+    await stubAzure(page);
+    await page.goto('/');
+
+    await expect(page.locator('.statusbar .ver')).toHaveText(/^v\d+\.\d+\.\d+/);
+
+    await page.getByRole('button', { name: 'About & legal' }).click();
+    const about = page.getByRole('dialog', { name: 'About DurableOps' });
+    await expect(about.getByRole('heading', { name: 'Licence' })).toBeVisible();
+    await expect(about.getByRole('link', { name: 'MIT Licence' })).toBeVisible();
+    await expect(about.getByText(/without warranty/i)).toBeVisible();
+    await expect(about.getByText(/collects nothing/i)).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await expect(about).toHaveCount(0);
+  });
 });
 
 test.describe('discovery', () => {
