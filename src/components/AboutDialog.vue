@@ -43,10 +43,8 @@ onBeforeUnmount(() => {
             <strong>sets no cookies</strong> and uses no analytics or tracking. The only things kept
             on your device are your sign-in session (held by Microsoft's library in tab-scoped
             session storage) and your list of favourite apps (local storage) — both
-            <strong>strictly necessary</strong> to provide the tool you asked for, which is the
-            category the EU/Belgian ePrivacy rules exempt from consent, so no cookie banner is
-            required. Signing in sends you to Microsoft, which sets its own strictly-necessary
-            cookies on its domain.
+            <strong>strictly necessary</strong> to provide the tool you asked for. Signing in sends
+            you to Microsoft, which sets its own strictly-necessary cookies on its domain.
           </p>
         </section>
 
