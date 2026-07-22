@@ -84,12 +84,16 @@ onBeforeUnmount(() => {
             <a :href="REPO" target="_blank" rel="noopener noreferrer">star on GitHub</a> helps
             others find it.
           </p>
-          <p v-if="config.donateUrl" class="gh">
-            And if it ever saved your night, you can
-            <a :href="config.donateUrl" target="_blank" rel="noopener noreferrer"
-              >buy me a coffee</a
-            >
-            — completely optional, always appreciated.
+        </section>
+
+        <!-- Set apart from the licence so the ask actually lands, but kept warm
+             and low-pressure, not a banner. -->
+        <section v-if="config.donateUrl" class="support">
+          <p class="supportline">
+            <span class="bigheart" aria-hidden="true">♥</span>
+            If DurableOps ever saved your night, you can
+            <a :href="config.donateUrl" target="_blank" rel="noopener noreferrer">buy me a coffee</a
+            >. Completely optional, always appreciated.
           </p>
         </section>
 
@@ -199,6 +203,28 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: var(--text-faint);
   margin-top: 4px;
+}
+
+/* The support ask, set apart: a warm pink left-accent gives it presence without
+   turning into a banner. */
+.support {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid #db61a2;
+  border-radius: 8px;
+  background: var(--bg-raised);
+}
+
+.support .supportline {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.support .bigheart {
+  color: #db61a2;
+  margin-right: 3px;
 }
 
 /* Deliberately the quietest thing here: the operator imprint the law wants
