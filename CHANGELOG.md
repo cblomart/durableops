@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/cblomart/durableops/compare/durableops-v0.2.0...durableops-v0.2.1) (2026-07-22)
+
+
+### Bug Fixes
+
+* centre the signed-out landing and make the tables device-safe ([b7bce37](https://github.com/cblomart/durableops/commit/b7bce37ef66cc3cf0208c8e8ae0879291ed9adf5))
+* green CI, and hard-gate prod deploys on it ([b0aee20](https://github.com/cblomart/durableops/commit/b0aee201bca660d5eef76865ceecfb0b7b3c3b9e))
+
 ## [0.2.0](https://github.com/cblomart/durableops/compare/durableops-v0.1.0...durableops-v0.2.0) (2026-07-22)
 
 
