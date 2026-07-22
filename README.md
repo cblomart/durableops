@@ -10,7 +10,8 @@ Reference UX: [DurableFunctionsMonitor](https://github.com/microsoft/DurableFunc
 
 - **Discovery** — Azure Resource Graph, with your ARM token. ARG only returns resources you can see, so the app list is your real access.
 - **Reads and actions** — the Durable Functions HTTP management API, reached through ARM's `hostruntime` proxy (`management.azure.com/{resourceId}/hostruntime/runtime/webhooks/durabletask/…`), with the same ARM token and authorised by your RBAC. It works on any storage backend and never reads the DurableTask table.
-- **No CORS, no keys** — because every call goes to `management.azure.com`, there is no per-app CORS to configure, no system key to fetch (so no app credential ever touches the browser), and App Service Authentication — which fronts the app's public hostname, not the ARM path — is never in the way. This is how the Azure Portal manages a function app.
+- **No CORS, no keys** — because every call goes to `management.azure.com`, there is no per-app CORS to configure and no system key to fetch, so no app credential ever touches the browser. This is how the Azure Portal manages a function app.
+- **Exception — Easy Auth.** App Service Authentication runs *inside* the app's request pipeline, so it still blocks the call even through the proxy. Apps with Easy Auth requiring authentication are flagged "needs config" in the list; the fix is to exclude the `/runtime/webhooks/durabletask` path from Easy Auth (or accept the app is unreachable from a browser-only tool).
 
 ## What it does
 

@@ -37,6 +37,25 @@ export interface NotDurableError {
 }
 
 /**
+ * The function app has App Service Authentication ("Easy Auth") enabled and
+ * requiring auth.
+ *
+ * Easy Auth runs inside the app's own request pipeline, so it rejects the call
+ * before the Durable runtime sees it — and, verified live, it does so even when
+ * the call arrives through the ARM `hostruntime` proxy (the proxy removes CORS
+ * and the system-key requirement, but not this). The rejection comes back as an
+ * HTML sign-in/permission page rather than the runtime's JSON, which is how we
+ * tell it apart from an ordinary auth failure.
+ *
+ * The fix is app-side: exclude the `/runtime/webhooks/durabletask` path from Easy
+ * Auth's validation, or accept the app is unreachable from a browser-only tool.
+ */
+export interface EasyAuthError {
+  kind: 'easyAuth';
+  message: string;
+}
+
+/**
  * Anything else, including 429 and a status-0 network failure.
  *
  * A `status: 0` here is a real transport failure (offline, DNS, blocked by
@@ -53,7 +72,7 @@ export interface HttpError {
   retryAfterSeconds?: number;
 }
 
-export type ApiError = AuthError | ForbiddenError | NotDurableError | HttpError;
+export type ApiError = AuthError | ForbiddenError | NotDurableError | EasyAuthError | HttpError;
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: ApiError };
 
@@ -82,6 +101,13 @@ export function describeError(error: ApiError): string {
       return "You don't have permission to operate on this app — activate your PIM role, then click Refresh rights.";
     case 'notDurable':
       return 'This app has no Durable Functions extension, so there is nothing to troubleshoot here.';
+    case 'easyAuth':
+      return (
+        'This app has App Service Authentication (Easy Auth) enabled, which blocks the ' +
+        'call before the Durable Functions runtime sees it — even through the ARM proxy. ' +
+        'To use it here, exclude the /runtime/webhooks/durabletask path from Easy Auth; ' +
+        'otherwise the app is unreachable from a browser-only tool.'
+      );
     case 'http':
       if (error.status === 429) {
         return `Azure is throttling this request. Retry in ${String(error.retryAfterSeconds ?? 30)}s.`;

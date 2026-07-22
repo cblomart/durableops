@@ -140,6 +140,26 @@ function map429(response: Response): ApiError {
   };
 }
 
+/**
+ * Whether an error response is App Service Authentication ("Easy Auth") blocking
+ * the call rather than the runtime (or ARM) answering.
+ *
+ * Easy Auth runs inside the app's request pipeline, so it intercepts the call
+ * even when it arrives through the ARM `hostruntime` proxy, and it answers with
+ * an HTML sign-in/permission page. The Durable runtime and ARM only ever answer
+ * errors as JSON or plain text, so an HTML body on this route is the tell.
+ * Verified live: `401 text/html` with `www-authenticate: Bearer realm=…
+ * azurewebsites.net` against an app with Easy Auth requiring authentication.
+ */
+function looksLikeEasyAuth(response: Response, body: string): boolean {
+  const contentType = response.headers.get('Content-Type') ?? '';
+  return (
+    contentType.includes('text/html') ||
+    body.includes('<html') ||
+    body.includes('permission to view this directory')
+  );
+}
+
 function mapStatus(response: Response, body: string, notFound: ApiError): ApiError {
   switch (response.status) {
     case 401:
@@ -207,6 +227,15 @@ async function call(
 
   // 202 is a success for actions and for in-progress instance queries.
   if (!response.ok && response.status !== 202) {
+    // Easy Auth first: it can answer any status (401/403/400) and would otherwise
+    // be mis-mapped to a plain auth/forbidden/HTTP error, sending the operator
+    // down the wrong path. Its HTML body is the reliable tell.
+    if (looksLikeEasyAuth(response, body)) {
+      return err({
+        kind: 'easyAuth',
+        message: 'App Service Authentication rejected the request before the runtime saw it',
+      });
+    }
     return err(mapStatus(response, body, notFound));
   }
 

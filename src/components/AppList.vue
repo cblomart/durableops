@@ -16,6 +16,8 @@ const props = defineProps<{
   classifying: boolean;
   /** App id -> failed instance count, filled in as rows are scanned. */
   failureScan: Map<string, FailureCount>;
+  /** App id -> the app is unreachable even via the ARM proxy (Easy Auth blocks it). */
+  unreachable: Map<string, 'easyAuth'>;
   /** True while any opportunistic scan is in flight. */
   scanning: boolean;
   /** App ids being scanned right now, so a row's refresh button can spin. */
@@ -36,6 +38,11 @@ const search = ref('');
 /** Failure count for an app from the scan, or null if it was not scanned yet. */
 function failuresOf(app: FunctionApp): FailureCount | null {
   return props.failureScan.get(app.id) ?? null;
+}
+
+/** True when the scan found the app blocked by Easy Auth (unreachable via the proxy). */
+function isUnreachable(app: FunctionApp): boolean {
+  return props.unreachable.has(app.id);
 }
 
 /**
@@ -221,7 +228,10 @@ watch([visible, () => props.loading, () => props.classifying], () => void nextTi
             :key="app.id"
             :data-app-id="app.id"
             class="row"
-            :class="{ problem: (failuresOf(app)?.count ?? 0) > 0 }"
+            :class="{
+              problem: (failuresOf(app)?.count ?? 0) > 0,
+              blockedrow: isUnreachable(app),
+            }"
             @click="$emit('select', app)"
           >
             <td class="star">
@@ -251,27 +261,44 @@ watch([visible, () => props.loading, () => props.classifying], () => void nextTi
             scanned clean app shows a quiet tick; an unscanned one shows nothing.
             Kept out of the Name cell so the app's name stays its own identity.
           -->
-            <td class="health">
-              <span
-                v-if="failuresOf(app) && failuresOf(app)!.count > 0"
-                class="failcount"
-                :title="`${failuresOf(app)!.count}${failuresOf(app)!.more ? '+' : ''} failed or terminated instance(s)`"
-              >
-                <span class="fdot" aria-hidden="true"></span>
-                {{ failuresOf(app)!.count }}{{ failuresOf(app)!.more ? '+' : '' }} failed
-              </span>
-              <span
-                v-else-if="failuresOf(app)"
-                class="clean"
-                title="No failed or terminated instances found"
-                >✓ healthy</span
-              >
-              <!-- Per-app manual refresh: re-scan this app's failure count now. -->
-              <RefreshButton
-                :busy="scanningIds.has(app.id)"
-                :label="`Re-scan ${app.name} for failures`"
-                @refresh="$emit('rescan', app)"
-              />
+            <td class="healthcol">
+              <!-- Flex lives on this inner wrapper, not the <td>: a display:flex
+                   table cell drops out of the table's column sizing and misaligns
+                   every column after it. -->
+              <div class="health">
+                <!--
+                An app the ARM proxy still cannot reach — Easy Auth rejects it
+                before the runtime, so it cannot be scanned. It leads with a
+                fixable-config flag rather than a blank or a misleading tick;
+                opening it explains the fix.
+              -->
+                <span
+                  v-if="isUnreachable(app)"
+                  class="blocked"
+                  title="Behind App Service Authentication (Easy Auth), which blocks even the ARM proxy. Exclude the /runtime/webhooks/durabletask path from Easy Auth. Open it for the fix."
+                  >⚠ needs config</span
+                >
+                <span
+                  v-else-if="failuresOf(app) && failuresOf(app)!.count > 0"
+                  class="failcount"
+                  :title="`${failuresOf(app)!.count}${failuresOf(app)!.more ? '+' : ''} failed or terminated instance(s)`"
+                >
+                  <span class="fdot" aria-hidden="true"></span>
+                  {{ failuresOf(app)!.count }}{{ failuresOf(app)!.more ? '+' : '' }} failed
+                </span>
+                <span
+                  v-else-if="failuresOf(app)"
+                  class="clean"
+                  title="No failed or terminated instances found"
+                  >✓ healthy</span
+                >
+                <!-- Per-app manual refresh: re-scan this app's failure count now. -->
+                <RefreshButton
+                  :busy="scanningIds.has(app.id)"
+                  :label="`Re-scan ${app.name} for failures`"
+                  @refresh="$emit('rescan', app)"
+                />
+              </div>
             </td>
             <td class="muted">{{ app.resourceGroup }}</td>
             <td class="muted">{{ app.location }}</td>
@@ -380,6 +407,12 @@ watch([visible, () => props.loading, () => props.classifying], () => void nextTi
   box-shadow: inset 3px 0 0 var(--danger);
 }
 
+/* Unreachable (Easy Auth): a quieter amber edge — noticeable, but not the red of
+   a failure. It's a config gap to fix, not an app in trouble. */
+.row.blockedrow > td:first-child {
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+
 .name {
   font-weight: 500;
 }
@@ -410,6 +443,14 @@ watch([visible, () => props.loading, () => props.classifying], () => void nextTi
   margin-left: 10px;
   font-size: 11px;
   color: var(--ok);
+}
+
+/* A config gap, not a failure: warn amber, not the red reserved for failures. */
+.blocked {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--warn);
+  cursor: help;
 }
 
 .star {

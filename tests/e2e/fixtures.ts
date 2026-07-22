@@ -87,6 +87,12 @@ export interface StubOptions {
    * lands on the instance query, not on listkeys.
    */
   forbidData?: boolean;
+  /**
+   * App has App Service Authentication (Easy Auth) on: the Durable data-plane
+   * call comes back as an HTML sign-in/permission page, which the ARM proxy does
+   * NOT bypass. Reproduces the config gap the "needs config" flag exists for.
+   */
+  easyAuth?: boolean;
   /** Trigger bindings ARM reports for the app; drives the durable/not-durable filter. */
   bindings?: string[];
   /** Force the /functions call to 403, so the app classifies as "unknown". */
@@ -95,6 +101,10 @@ export interface StubOptions {
   // Passing only a read wildcard reproduces Reader: sees every app, operates none.
   actions?: string[];
 }
+
+/** The HTML page App Service Authentication returns when it blocks a request. */
+const EASY_AUTH_BODY =
+  '<html><body>You do not have permission to view this directory or page.</body></html>';
 
 /**
  * Stub every Azure origin the app talks to: ARG, the permissions check,
@@ -109,10 +119,15 @@ export async function stubAzure(page: Page, options: StubOptions = {}): Promise<
     detailStatus = 'Failed',
     output = detailStatus === 'Failed' ? FAILED_OUTPUT : null,
     forbidData = false,
+    easyAuth = false,
     bindings = ['orchestrationTrigger', 'activityTrigger'],
     forbidFunctions = false,
     actions = ['Microsoft.Web/sites/read', 'Microsoft.Web/sites/hostruntime/host/action'],
   } = options;
+
+  // Easy Auth answers any Durable call with an HTML permission page (status 401).
+  const durableBlock = (route: Route): Promise<void> =>
+    route.fulfill({ status: 401, contentType: 'text/html', body: EASY_AUTH_BODY });
 
   await page.route('**/providers/Microsoft.ResourceGraph/resources**', (route: Route) =>
     route.fulfill({ json: { data: [argRow(APP_NAME)], totalRecords: 1 } })
@@ -150,23 +165,23 @@ export async function stubAzure(page: Page, options: StubOptions = {}): Promise<
 
   // Instance detail must be routed before the collection route, since the
   // collection glob would otherwise swallow it.
-  await page.route(`**/runtime/webhooks/durabletask/instances/*`, (route: Route) =>
-    forbidData
-      ? route.fulfill({ status: 403, body: 'RBAC denied' })
-      : route.fulfill({
-          json: {
-            ...instance('abc123', 'OrderSaga', detailStatus),
-            output,
-            historyEvents: history,
-          },
-        })
-  );
+  await page.route(`**/runtime/webhooks/durabletask/instances/*`, (route: Route) => {
+    if (easyAuth) return durableBlock(route);
+    if (forbidData) return route.fulfill({ status: 403, body: 'RBAC denied' });
+    return route.fulfill({
+      json: {
+        ...instance('abc123', 'OrderSaga', detailStatus),
+        output,
+        historyEvents: history,
+      },
+    });
+  });
 
-  await page.route(`**/runtime/webhooks/durabletask/instances?**`, (route: Route) =>
-    forbidData
-      ? route.fulfill({ status: 403, body: 'RBAC denied' })
-      : route.fulfill({ json: instances })
-  );
+  await page.route(`**/runtime/webhooks/durabletask/instances?**`, (route: Route) => {
+    if (easyAuth) return durableBlock(route);
+    if (forbidData) return route.fulfill({ status: 403, body: 'RBAC denied' });
+    return route.fulfill({ json: instances });
+  });
 
   // Instance action sub-routes (terminate / suspend / resume / rewind / restart /
   // raiseEvent). One extra path segment after the id, so this never shadows the

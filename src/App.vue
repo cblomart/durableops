@@ -70,15 +70,24 @@ const tenantName = ref(user.value?.tenantId ?? '');
 /**
  * Opportunistic failure scan: app id -> failed instance count.
  *
- * Counting failures needs a per-app key and a webhook call, so scanning the
- * whole fleet at once would pull hundreds of keys just to draw a list. Instead
- * the app list scans only the rows scrolled into view (see AppList's intersection
- * observer), through the bounded queue below — so at small scale everything gets
- * a count, and at fleet scale only the apps the operator actually looks at are
- * scanned (and only they have a key pulled). Failures are first-class here, so
- * this runs automatically; the bounded queue keeps it from storming any app.
+ * Counting failures is a webhook call per app, so scanning the whole fleet at
+ * once would hammer every app just to draw a list. Instead the app list scans
+ * only the rows scrolled into view (see AppList's intersection observer), through
+ * the bounded queue below — so at small scale everything gets a count, and at
+ * fleet scale only the apps the operator actually looks at are scanned. Failures
+ * are first-class here, so this runs automatically; the bounded queue keeps it
+ * from storming any app.
  */
 const failureScan = ref(new Map<string, FailureCount>());
+/**
+ * App id -> the app cannot be reached even through the ARM proxy.
+ *
+ * The proxy removes CORS and the system-key requirement, but not App Service
+ * Authentication (Easy Auth): that middleware runs inside the app and rejects the
+ * call before the Durable runtime sees it. It's a fixable app-config gap, not a
+ * failure of the app, so we flag it rather than leave the row blank.
+ */
+const unreachable = ref(new Map<string, 'easyAuth'>());
 /** app id -> when it was last scanned, so a visible row can refresh lazily. */
 const scannedAt = new Map<string, number>();
 const scanning = ref(false);
@@ -115,6 +124,17 @@ function rescanApp(app: FunctionApp): void {
   enqueueScan(app, true);
 }
 
+function setUnreachable(id: string, kind: 'easyAuth'): void {
+  unreachable.value = new Map(unreachable.value).set(id, kind);
+}
+
+function clearUnreachable(id: string): void {
+  if (!unreachable.value.has(id)) return;
+  const next = new Map(unreachable.value);
+  next.delete(id);
+  unreachable.value = next;
+}
+
 async function scanOne(app: FunctionApp): Promise<void> {
   try {
     const token = await getArmToken();
@@ -123,6 +143,11 @@ async function scanOne(app: FunctionApp): Promise<void> {
     const scan = await countFailedInstances({ resourceId: app.id }, token);
     if (scan.ok) {
       failureScan.value = new Map(failureScan.value).set(app.id, scan.value);
+      clearUnreachable(app.id);
+    } else if (scan.error.kind === 'easyAuth') {
+      // The scan is the real data-plane call, so it detects the Easy Auth block
+      // for free — flag the row rather than let it look merely unscanned.
+      setUnreachable(app.id, 'easyAuth');
     }
   } catch {
     // A single app's scan failing must never break the list.
@@ -267,6 +292,7 @@ async function refreshRights(): Promise<void> {
   durable.value = new Map();
   operable.value = new Map();
   failureScan.value = new Map();
+  unreachable.value = new Map();
   scannedAt.clear();
   scanQueue.length = 0;
   scanningIds.value = new Set();
@@ -682,6 +708,7 @@ onUnmounted(() => {
         :operable="operable"
         :classifying="classifying"
         :failure-scan="failureScan"
+        :unreachable="unreachable"
         :scanning="scanning"
         :scanning-ids="scanningIds"
         @select="openApp"
