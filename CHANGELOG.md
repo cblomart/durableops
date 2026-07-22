@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/cblomart/durableops/compare/durableops-v0.3.0...durableops-v0.4.0) (2026-07-22)
+
+
+### Features
+
+* reach the Durable API through ARM's hostruntime proxy ([#10](https://github.com/cblomart/durableops/issues/10)) ([b05ef13](https://github.com/cblomart/durableops/commit/b05ef139150644f45cca0109cb2e7beef5ba0843))
+
+
+### Bug Fixes
+
+* handle Easy Auth apps and fix apps-table column alignment ([#13](https://github.com/cblomart/durableops/issues/13)) ([33afb01](https://github.com/cblomart/durableops/commit/33afb01f5e6f0108c4ee43ec705676e07ea0e8fd))
+
 ## [0.3.0](https://github.com/cblomart/durableops/compare/durableops-v0.2.1...durableops-v0.3.0) (2026-07-22)
 
 
