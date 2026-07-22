@@ -103,6 +103,15 @@ function optionalBool(record: Record<string, unknown>, key: string): boolean | u
   return value;
 }
 
+/** Optional string fields copied through verbatim when present. */
+const OPTIONAL_STRINGS = [
+  'redirectUri',
+  'operatorName',
+  'operatorContact',
+  'operatorId',
+  'donateUrl',
+] as const;
+
 function validate(raw: unknown): AppConfig {
   if (typeof raw !== 'object' || raw === null) {
     throw new Error('config.json must be a JSON object');
@@ -110,30 +119,21 @@ function validate(raw: unknown): AppConfig {
   const record = raw as Record<string, unknown>;
 
   const multitenant = optionalBool(record, 'multitenant') === true;
-  const redirectUri = optional(record, 'redirectUri');
   // A single-tenant deploy must name its tenant; a multi-tenant one signs in via
   // /organizations, so tenantId is not needed and defaults to empty.
-  const tenantId = multitenant
-    ? (optional(record, 'tenantId') ?? '')
-    : required(record, 'tenantId');
-
-  const operatorName = optional(record, 'operatorName');
-  const operatorContact = optional(record, 'operatorContact');
-  const operatorId = optional(record, 'operatorId');
-  const showGitHubStar = optionalBool(record, 'showGitHubStar');
-  const donateUrl = optional(record, 'donateUrl');
-
-  return {
-    tenantId,
+  const config: AppConfig = {
+    tenantId: multitenant ? (optional(record, 'tenantId') ?? '') : required(record, 'tenantId'),
     clientId: required(record, 'clientId'),
-    ...(multitenant ? { multitenant: true } : {}),
-    ...(redirectUri === undefined ? {} : { redirectUri }),
-    ...(operatorName === undefined ? {} : { operatorName }),
-    ...(operatorContact === undefined ? {} : { operatorContact }),
-    ...(operatorId === undefined ? {} : { operatorId }),
-    ...(showGitHubStar === undefined ? {} : { showGitHubStar }),
-    ...(donateUrl === undefined ? {} : { donateUrl }),
   };
+
+  if (multitenant) config.multitenant = true;
+  if (optionalBool(record, 'showGitHubStar') === true) config.showGitHubStar = true;
+  for (const key of OPTIONAL_STRINGS) {
+    const value = optional(record, key);
+    if (value !== undefined) config[key] = value;
+  }
+
+  return config;
 }
 
 /**

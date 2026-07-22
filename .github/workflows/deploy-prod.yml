@@ -23,8 +23,25 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Hard gate: the exact commit being released must pass the full quality bar
+  # before anything reaches prod. If this fails, `deploy` never runs.
+  checks:
+    name: Quality gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run verify # format + lint + typecheck + coverage + build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+
   deploy:
     name: Build and deploy to prod
+    needs: checks
     runs-on: ubuntu-latest
     environment: prod
     steps:

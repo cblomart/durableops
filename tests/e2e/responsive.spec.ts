@@ -31,7 +31,7 @@ for (const device of DEVICES) {
 
       await expect(page.getByRole('heading', { name: /Troubleshoot/ })).toBeVisible();
       await expect(page.locator('.statusbar')).toBeVisible();
-      expect(await pageOverflow(page)).toBeLessThanOrEqual(1);
+      await expect.poll(() => pageOverflow(page)).toBeLessThanOrEqual(1);
     });
 
     test('signed-in app + instance views never scroll the body sideways', async ({ page }) => {
@@ -43,17 +43,17 @@ for (const device of DEVICES) {
 
       // App list.
       await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toBeVisible();
-      expect(await pageOverflow(page)).toBeLessThanOrEqual(1);
+      await expect.poll(() => pageOverflow(page)).toBeLessThanOrEqual(1);
 
       // Instance list (the widest table).
       await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
       await expect(page.getByRole('table')).toBeVisible();
-      expect(await pageOverflow(page)).toBeLessThanOrEqual(1);
+      await expect.poll(() => pageOverflow(page)).toBeLessThanOrEqual(1);
 
       // Instance detail.
       await page.locator('.idtext', { hasText: /^i1$/ }).click();
       await expect(page.locator('.title .id')).toBeVisible();
-      expect(await pageOverflow(page)).toBeLessThanOrEqual(1);
+      await expect.poll(() => pageOverflow(page)).toBeLessThanOrEqual(1);
     });
   });
 }

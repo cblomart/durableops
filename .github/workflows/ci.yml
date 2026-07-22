@@ -120,12 +120,6 @@ jobs:
       - name: npm audit (fail on high+)
         run: npm audit --audit-level=high
 
-  dependency-review:
-    name: Dependency review
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/dependency-review-action@v4
-        with:
-          fail-on-severity: high
+  # Dependency vulnerability coverage is npm audit (here) + Snyk Open Source +
+  # Dependabot. The dependency-review action was dropped: it needs GitHub's
+  # Dependency Graph API and duplicated the above.
