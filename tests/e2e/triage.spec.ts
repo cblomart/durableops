@@ -44,6 +44,12 @@ test.describe('signed out', () => {
 
     await expect(page.locator('.statusbar .ver')).toHaveText(/^v\d+\.\d+\.\d+/);
 
+    // A sober GitHub star nudge in the status bar, linking to the repo.
+    await expect(page.locator('.statusbar').getByRole('link', { name: /Star/ })).toHaveAttribute(
+      'href',
+      /github\.com\/cblomart\/durableops/
+    );
+
     await page.getByRole('button', { name: 'About & legal' }).click();
     const about = page.getByRole('dialog', { name: 'About DurableOps' });
     await expect(about.getByRole('heading', { name: 'Licence' })).toBeVisible();

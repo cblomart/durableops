@@ -79,6 +79,11 @@ onBeforeUnmount(() => {
             >
             (© Microsoft Corporation).
           </p>
+          <p class="gh">
+            If DurableOps saved you time, a
+            <a :href="REPO" target="_blank" rel="noopener noreferrer">star on GitHub</a> helps
+            others find it.
+          </p>
         </section>
 
         <section v-if="config.operatorName">
@@ -180,6 +185,13 @@ onBeforeUnmount(() => {
 
 .body strong {
   color: var(--text);
+}
+
+/* Soft, not a pitch: a smaller, fainter aside under the licence. */
+.body .gh {
+  font-size: 12px;
+  color: var(--text-faint);
+  margin-top: 4px;
 }
 
 /* Deliberately the quietest thing here: the operator imprint the law wants
