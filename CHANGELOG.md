@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/cblomart/durableops/compare/durableops-v0.2.1...durableops-v0.3.0) (2026-07-22)
+
+
+### Features
+
+* set the coffee ask apart in About; fix release auto-deploy dispatch ([cdb8fa3](https://github.com/cblomart/durableops/commit/cdb8fa399093a92df42893743ceab53521432393))
+
 ## [0.2.1](https://github.com/cblomart/durableops/compare/durableops-v0.2.0...durableops-v0.2.1) (2026-07-22)
 
 
