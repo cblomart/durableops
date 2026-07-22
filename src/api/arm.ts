@@ -1,10 +1,15 @@
 /**
- * Azure Resource Manager client: function app discovery (Resource Graph) and
- * on-demand system key retrieval (listkeys).
+ * Azure Resource Manager client: function app discovery (Resource Graph),
+ * durable classification (function bindings) and the caller's effective-
+ * permissions check.
  *
  * Every call carries the signed-in user's ARM token. There is no service
  * principal and no fallback identity — if the user cannot see it, DurableOps
  * cannot see it either. That is the security model, not a limitation.
+ *
+ * No system keys: the Durable data plane is reached through the ARM hostruntime
+ * proxy (see durable.ts), authorised by the same ARM token, so this module never
+ * pulls an app-wide credential into the browser.
  */
 import {
   ARM_BASE,
@@ -68,24 +73,6 @@ const ARG_PAGE_SIZE = 1000;
 
 /** Guard against an unbounded paging loop if ARG ever returns a non-advancing token. */
 const MAX_PAGES = 50;
-
-/**
- * In-memory system key cache: ARM resource ID -> durabletask_extension key.
- *
- * Module-scoped and never persisted. Keys are Function-app-wide credentials; the
- * brief forbids them touching localStorage/sessionStorage/IndexedDB/URLs. This
- * Map dies with the tab, and `clearKeyCache()` empties it on sign-out and on
- * "Refresh rights".
- */
-const keyCache = new Map<string, string>();
-
-export function clearKeyCache(): void {
-  keyCache.clear();
-}
-
-export function cachedKeyCount(): number {
-  return keyCache.size;
-}
 
 function toApiError(status: number, retryAfter: string | null, body: string): ApiError {
   if (status === 401) return { kind: 'auth', message: body || 'Token rejected by Azure' };
@@ -284,14 +271,21 @@ export async function getTenantName(
  *
  * Seeing an app and operating it are different permissions: Resource Graph
  * returns everything the user can READ (Reader shows the whole tenant), while
- * every useful thing DurableOps does needs the durable system key, which needs
- * `listkeys`. Listing apps the operator cannot act on is noise, so we ask ARM
- * per scope and hide what they cannot use.
+ * every useful thing DurableOps does — list instances, act on them — goes through
+ * the app's hostruntime, which needs the `hostruntime/host/action` operation.
+ * Listing apps the operator cannot act on is noise, so we ask ARM per scope and
+ * hide what they cannot use. (Reader holds only read actions, so it fails this
+ * and its apps stay hidden.)
  */
 export type Operability = 'yes' | 'no' | 'unknown';
 
-/** The one action that decides whether DurableOps can do anything with an app. */
-const LISTKEYS_ACTION = 'microsoft.web/sites/host/listkeys/action';
+/**
+ * The action that decides whether DurableOps can do anything with an app: invoke
+ * its host runtime (the ARM proxy the Durable webhook API is reached through).
+ * Every built-in operator role — Owner, Contributor, Website Contributor — grants
+ * it via `Microsoft.Web/sites/*`; no system key or `listkeys` is involved.
+ */
+const OPERATE_ACTION = 'microsoft.web/sites/hostruntime/host/action';
 
 /** Turn an RBAC action pattern (`*`, `Microsoft.Web/*`) into a matcher. */
 function actionMatches(pattern: string, action: string): boolean {
@@ -322,7 +316,8 @@ function grantsAction(payload: unknown, action: string): Operability {
 }
 
 /**
- * Ask ARM what the *caller* may do at a scope, and whether that includes listkeys.
+ * Ask ARM what the *caller* may do at a scope, and whether that includes invoking
+ * the app's host runtime.
  *
  * Reads the caller's own effective permissions, which needs only the
  * `Microsoft.Authorization` read actions that the built-in Reader role already
@@ -338,7 +333,7 @@ export async function checkOperability(
   const response = await armFetch(url, token, undefined, fetchImpl, 'GET');
   // Could not ask => do not claim the operator lacks access.
   if (!response.ok) return 'unknown';
-  return grantsAction(response.value, LISTKEYS_ACTION);
+  return grantsAction(response.value, OPERATE_ACTION);
 }
 
 /**
@@ -478,61 +473,4 @@ export async function classifyDurableApps(
     }
   });
   await Promise.all(workers);
-}
-
-/**
- * Pull `systemKeys.durabletask_extension` out of a listkeys payload.
- *
- * A function app with no durabletask_extension key never loaded the Durable Task
- * extension: it is a function app, but not a durable one, which is a normal
- * fleet condition rather than a failure.
- */
-function extractDurableKey(payload: unknown, appName: string): Result<string> {
-  if (typeof payload !== 'object' || payload === null) {
-    return err({ kind: 'http', status: 200, message: 'listkeys returned a non-object' });
-  }
-
-  const systemKeys = (payload as Record<string, unknown>)['systemKeys'];
-  if (typeof systemKeys !== 'object' || systemKeys === null) {
-    return err({ kind: 'notDurable', message: `${appName} exposes no system keys` });
-  }
-
-  const key = (systemKeys as Record<string, unknown>)['durabletask_extension'];
-  if (typeof key !== 'string' || key === '') {
-    return err({
-      kind: 'notDurable',
-      message: `${appName} has no durabletask_extension system key`,
-    });
-  }
-
-  return ok(key);
-}
-
-/**
- * Fetch (and memoise) an app's `durabletask_extension` system key.
- *
- * Called lazily — only when the operator opens an app — so browsing the app list
- * never pulls credentials for hundreds of apps. A 403 here is the PIM signal:
- * the user can read the app (ARG showed it) but cannot list its keys.
- */
-export async function getDurableSystemKey(
-  app: FunctionApp,
-  token: string,
-  fetchImpl: typeof fetch = fetch
-): Promise<Result<string>> {
-  const cached = keyCache.get(app.id);
-  if (cached !== undefined) return ok(cached);
-
-  const url = `${ARM_BASE}${app.id}/host/default/listkeys?api-version=${WEB_API_VERSION}`;
-  const response = await armFetch(url, token, undefined, fetchImpl);
-  if (!response.ok) {
-    // Name the app in the 403 so the PIM prompt can say which one to activate.
-    return err(
-      response.error.kind === 'forbidden' ? { ...response.error, scope: app.name } : response.error
-    );
-  }
-
-  const key = extractDurableKey(response.value, app.name);
-  if (key.ok) keyCache.set(app.id, key.value);
-  return key;
 }

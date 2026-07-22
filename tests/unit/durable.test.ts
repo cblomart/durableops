@@ -17,11 +17,14 @@ import {
   FAILURE_EVENT_TYPES,
   type DurableTarget,
 } from '../../src/api/durable';
+import { WEB_API_VERSION } from '../../src/config';
 
-const TARGET: DurableTarget = {
-  hostName: 'func-a.azurewebsites.net',
-  systemKey: 'sys-key-123',
-};
+const RESOURCE_ID = '/subscriptions/sub-1/resourceGroups/rg-a/providers/Microsoft.Web/sites/func-a';
+const TARGET: DurableTarget = { resourceId: RESOURCE_ID };
+const TOKEN = 'arm-token-xyz';
+
+/** Everything the proxy serves lives under this path suffix, whatever the host. */
+const WEBHOOK_PATH = `${RESOURCE_ID}/hostruntime/runtime/webhooks/durabletask`;
 
 const UPN = 'ops@contoso.com';
 
@@ -57,10 +60,10 @@ function urlOf(fetchMock: ReturnType<typeof mockFetch>, call = 0): URL {
 }
 
 describe('listInstances', () => {
-  it('returns typed instances and passes the system key as ?code=', async () => {
+  it('returns typed instances via the ARM hostruntime proxy with a bearer token', async () => {
     const fetchMock = mockFetch(jsonResponse([instanceRow()]));
 
-    const result = await listInstances(TARGET, {}, fetchMock);
+    const result = await listInstances(TARGET, TOKEN, {}, fetchMock);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -71,8 +74,15 @@ describe('listInstances', () => {
     });
 
     const url = urlOf(fetchMock);
-    expect(url.pathname).toBe('/runtime/webhooks/durabletask/instances');
-    expect(url.searchParams.get('code')).toBe('sys-key-123');
+    // The call goes through ARM, not the app's own hostname — that is what
+    // eliminates per-app CORS and the system key.
+    expect(url.origin).toBe('https://management.azure.com');
+    expect(url.pathname).toBe(`${WEBHOOK_PATH}/instances`);
+    expect(url.searchParams.get('api-version')).toBe(WEB_API_VERSION);
+    expect(url.searchParams.has('code')).toBe(false);
+
+    const init = (fetchMock.mock.calls[0] as [string, RequestInit])[1];
+    expect((init.headers as Record<string, string>)['Authorization']).toBe(`Bearer ${TOKEN}`);
   });
 
   it('sends every server-side filter the API actually supports', async () => {
@@ -80,6 +90,7 @@ describe('listInstances', () => {
 
     await listInstances(
       TARGET,
+      TOKEN,
       {
         createdTimeFrom: new Date('2026-06-01T00:00:00Z'),
         createdTimeTo: new Date('2026-06-02T00:00:00Z'),
@@ -102,7 +113,7 @@ describe('listInstances', () => {
   it('omits filters that were not supplied', async () => {
     const fetchMock = mockFetch(jsonResponse([]));
 
-    await listInstances(TARGET, {}, fetchMock);
+    await listInstances(TARGET, TOKEN, {}, fetchMock);
 
     const params = urlOf(fetchMock).searchParams;
     expect(params.has('runtimeStatus')).toBe(false);
@@ -113,7 +124,7 @@ describe('listInstances', () => {
   it('omits runtimeStatus when an empty status list is passed', async () => {
     const fetchMock = mockFetch(jsonResponse([]));
 
-    await listInstances(TARGET, { runtimeStatus: [] }, fetchMock);
+    await listInstances(TARGET, TOKEN, { runtimeStatus: [] }, fetchMock);
 
     expect(urlOf(fetchMock).searchParams.has('runtimeStatus')).toBe(false);
   });
@@ -123,7 +134,7 @@ describe('listInstances', () => {
       jsonResponse([instanceRow()], { headers: { 'x-ms-continuation-token': 'token-abc' } })
     );
 
-    const result = await listInstances(TARGET, {}, fetchMock);
+    const result = await listInstances(TARGET, TOKEN, {}, fetchMock);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -133,7 +144,7 @@ describe('listInstances', () => {
   it('sends a supplied continuation token back as a request header', async () => {
     const fetchMock = mockFetch(jsonResponse([]));
 
-    await listInstances(TARGET, { continuationToken: 'token-abc' }, fetchMock);
+    await listInstances(TARGET, TOKEN, { continuationToken: 'token-abc' }, fetchMock);
 
     const init = (fetchMock.mock.calls[0] as [string, RequestInit])[1];
     expect((init.headers as Record<string, string>)['x-ms-continuation-token']).toBe('token-abc');
@@ -142,7 +153,7 @@ describe('listInstances', () => {
   it('reports no continuation token when the header is absent or empty', async () => {
     const fetchMock = mockFetch(jsonResponse([instanceRow()]));
 
-    const result = await listInstances(TARGET, {}, fetchMock);
+    const result = await listInstances(TARGET, TOKEN, {}, fetchMock);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -157,51 +168,31 @@ describe('listInstances', () => {
   it('maps 404 on the collection route to notDurable', async () => {
     const fetchMock = mockFetch(new Response('Not Found', { status: 404 }));
 
-    const result = await listInstances(TARGET, {}, fetchMock);
+    const result = await listInstances(TARGET, TOKEN, {}, fetchMock);
 
     expect(result).toMatchObject({ ok: false, error: { kind: 'notDurable' } });
   });
 
-  it('maps a fetch throw to the ambiguous browser-blocked error', async () => {
+  /*
+   * ARM sends permissive CORS headers, so a browser fetch never fails the
+   * cross-origin check the way a direct app-hostname call did. A throw here is a
+   * genuine network failure, reported as a zero-status http error — there is no
+   * longer any `cors` or `easyAuth` outcome to distinguish.
+   */
+  it('maps a fetch throw to a zero-status network error', async () => {
     const fetchMock = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
 
-    const result = await listInstances(TARGET, {}, fetchMock);
+    const result = await listInstances(TARGET, TOKEN, {}, fetchMock);
 
-    expect(result).toMatchObject({ ok: false, error: { kind: 'cors' } });
+    expect(result).toMatchObject({ ok: false, error: { kind: 'http', status: 0 } });
   });
 
-  it('maps a plain 401 to an auth error (bad or rotated system key)', async () => {
+  it('maps a 401 to an auth error (the ARM token was rejected)', async () => {
     const fetchMock = mockFetch(new Response('', { status: 401 }));
 
-    const result = await listInstances(TARGET, {}, fetchMock);
+    const result = await listInstances(TARGET, TOKEN, {}, fetchMock);
 
     expect(result).toMatchObject({ ok: false, error: { kind: 'auth' } });
-  });
-
-  /*
-   * Easy Auth answers with an HTML login page even when the system key is valid
-   * (verified live during the spike). Only reachable from Node — in a browser the
-   * same response has no CORS headers and fetch throws first.
-   */
-  it('detects Easy Auth from an HTML 401 rather than blaming the system key', async () => {
-    const fetchMock = mockFetch(
-      new Response('<html><body>Sign in</body></html>', {
-        status: 401,
-        headers: { 'Content-Type': 'text/html' },
-      })
-    );
-
-    const result = await listInstances(TARGET, {}, fetchMock);
-
-    expect(result).toMatchObject({ ok: false, error: { kind: 'easyAuth' } });
-  });
-
-  it('detects Easy Auth from an HTML body even without a text/html content type', async () => {
-    const fetchMock = mockFetch(new Response('<html>login</html>', { status: 401 }));
-
-    const result = await listInstances(TARGET, {}, fetchMock);
-
-    expect(result).toMatchObject({ ok: false, error: { kind: 'easyAuth' } });
   });
 
   it('maps 429 to an http error carrying Retry-After', async () => {
@@ -209,7 +200,7 @@ describe('listInstances', () => {
       new Response('slow down', { status: 429, headers: { 'Retry-After': '17' } })
     );
 
-    const result = await listInstances(TARGET, {}, fetchMock);
+    const result = await listInstances(TARGET, TOKEN, {}, fetchMock);
 
     expect(result).toMatchObject({
       ok: false,
@@ -220,7 +211,7 @@ describe('listInstances', () => {
   it('maps 403 to forbidden', async () => {
     const fetchMock = mockFetch(new Response('nope', { status: 403 }));
 
-    const result = await listInstances(TARGET, {}, fetchMock);
+    const result = await listInstances(TARGET, TOKEN, {}, fetchMock);
 
     expect(result).toMatchObject({ ok: false, error: { kind: 'forbidden' } });
   });
@@ -228,7 +219,7 @@ describe('listInstances', () => {
   it('rejects invalid JSON instead of throwing', async () => {
     const fetchMock = mockFetch(new Response('{not json', { status: 200 }));
 
-    const result = await listInstances(TARGET, {}, fetchMock);
+    const result = await listInstances(TARGET, TOKEN, {}, fetchMock);
 
     expect(result).toMatchObject({ ok: false, error: { kind: 'http' } });
   });
@@ -236,7 +227,7 @@ describe('listInstances', () => {
   it('rejects a payload that is not an array', async () => {
     const fetchMock = mockFetch(jsonResponse({ instances: [] }));
 
-    const result = await listInstances(TARGET, {}, fetchMock);
+    const result = await listInstances(TARGET, TOKEN, {}, fetchMock);
 
     expect(result.ok).toBe(false);
   });
@@ -244,7 +235,7 @@ describe('listInstances', () => {
   it('skips malformed rows rather than failing the page', async () => {
     const fetchMock = mockFetch(jsonResponse([instanceRow(), null, {}, 'nonsense']));
 
-    const result = await listInstances(TARGET, {}, fetchMock);
+    const result = await listInstances(TARGET, TOKEN, {}, fetchMock);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -256,7 +247,7 @@ describe('getInstance', () => {
   it('requests history, history output and input', async () => {
     const fetchMock = mockFetch(jsonResponse({ ...instanceRow(), historyEvents: [] }));
 
-    await getInstance(TARGET, 'abc123', fetchMock);
+    await getInstance(TARGET, TOKEN, 'abc123', fetchMock);
 
     const params = urlOf(fetchMock).searchParams;
     expect(params.get('showHistory')).toBe('true');
@@ -286,7 +277,7 @@ describe('getInstance', () => {
       })
     );
 
-    const result = await getInstance(TARGET, 'abc123', fetchMock);
+    const result = await getInstance(TARGET, TOKEN, 'abc123', fetchMock);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -306,7 +297,7 @@ describe('getInstance', () => {
       })
     );
 
-    const result = await getInstance(TARGET, 'abc123', fetchMock);
+    const result = await getInstance(TARGET, TOKEN, 'abc123', fetchMock);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -324,7 +315,7 @@ describe('getInstance', () => {
     };
     const fetchMock = mockFetch(jsonResponse({ ...instanceRow(), historyEvents: [rawEvent] }));
 
-    const result = await getInstance(TARGET, 'abc123', fetchMock);
+    const result = await getInstance(TARGET, TOKEN, 'abc123', fetchMock);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -340,7 +331,7 @@ describe('getInstance', () => {
   it('treats a missing history as empty rather than failing', async () => {
     const fetchMock = mockFetch(jsonResponse(instanceRow()));
 
-    const result = await getInstance(TARGET, 'abc123', fetchMock);
+    const result = await getInstance(TARGET, TOKEN, 'abc123', fetchMock);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -352,7 +343,7 @@ describe('getInstance', () => {
       jsonResponse({ ...instanceRow(), runtimeStatus: 'Running' }, { status: 202 })
     );
 
-    const result = await getInstance(TARGET, 'abc123', fetchMock);
+    const result = await getInstance(TARGET, TOKEN, 'abc123', fetchMock);
 
     expect(result.ok).toBe(true);
   });
@@ -361,7 +352,7 @@ describe('getInstance', () => {
   it('maps 404 on an instance route to a not-found http error, not notDurable', async () => {
     const fetchMock = mockFetch(new Response('', { status: 404 }));
 
-    const result = await getInstance(TARGET, 'missing', fetchMock);
+    const result = await getInstance(TARGET, TOKEN, 'missing', fetchMock);
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -372,7 +363,7 @@ describe('getInstance', () => {
   it('url-encodes instance ids containing awkward characters', async () => {
     const fetchMock = mockFetch(jsonResponse(instanceRow()));
 
-    await getInstance(TARGET, 'order/123 456', fetchMock);
+    await getInstance(TARGET, TOKEN, 'order/123 456', fetchMock);
 
     expect((fetchMock.mock.calls[0] as [string])[0]).toContain('order%2F123%20456');
   });
@@ -398,13 +389,24 @@ describe('actions', () => {
   it('terminate posts to /terminate with the identity-prefixed reason', async () => {
     const fetchMock = mockFetch(new Response('', { status: 202 }));
 
-    const result = await terminateInstance(TARGET, 'abc123', UPN, 'stuck forever', fetchMock);
+    const result = await terminateInstance(
+      TARGET,
+      TOKEN,
+      'abc123',
+      UPN,
+      'stuck forever',
+      fetchMock
+    );
 
     expect(result.ok).toBe(true);
     const url = urlOf(fetchMock);
-    expect(url.pathname).toBe('/runtime/webhooks/durabletask/instances/abc123/terminate');
+    expect(url.pathname).toBe(`${WEBHOOK_PATH}/instances/abc123/terminate`);
     expect(url.searchParams.get('reason')).toBe('DurableOps/ops@contoso.com: stuck forever');
-    expect((fetchMock.mock.calls[0] as [string, RequestInit])[1].method).toBe('POST');
+    const init = (fetchMock.mock.calls[0] as [string, RequestInit])[1];
+    expect(init.method).toBe('POST');
+    // A body is required: the proxy answers 411 to a POST with no Content-Length.
+    expect(init.body).toBe('');
+    expect((init.headers as Record<string, string>)['Authorization']).toBe(`Bearer ${TOKEN}`);
   });
 
   it.each([
@@ -414,12 +416,10 @@ describe('actions', () => {
   ])('%s posts to its route with an audited reason', async (operation, fn) => {
     const fetchMock = mockFetch(new Response('', { status: 202 }));
 
-    const result = await fn(TARGET, 'abc123', UPN, 'operator reason', fetchMock);
+    const result = await fn(TARGET, TOKEN, 'abc123', UPN, 'operator reason', fetchMock);
 
     expect(result.ok).toBe(true);
-    expect(urlOf(fetchMock).pathname).toBe(
-      `/runtime/webhooks/durabletask/instances/abc123/${operation}`
-    );
+    expect(urlOf(fetchMock).pathname).toBe(`${WEBHOOK_PATH}/instances/abc123/${operation}`);
     expect(urlOf(fetchMock).searchParams.get('reason')).toBe(
       'DurableOps/ops@contoso.com: operator reason'
     );
@@ -428,22 +428,29 @@ describe('actions', () => {
   it('restart posts to /restart with restartWithNewInstanceId', async () => {
     const fetchMock = mockFetch(new Response('', { status: 202 }));
 
-    const result = await restartInstance(TARGET, 'abc123', true, fetchMock);
+    const result = await restartInstance(TARGET, TOKEN, 'abc123', true, fetchMock);
 
     expect(result.ok).toBe(true);
     const url = urlOf(fetchMock);
-    expect(url.pathname).toBe('/runtime/webhooks/durabletask/instances/abc123/restart');
+    expect(url.pathname).toBe(`${WEBHOOK_PATH}/instances/abc123/restart`);
     expect(url.searchParams.get('restartWithNewInstanceId')).toBe('true');
   });
 
   it('raiseEvent posts a JSON body to the named event route', async () => {
     const fetchMock = mockFetch(new Response('', { status: 202 }));
 
-    const result = await raiseEvent(TARGET, 'abc123', 'Approval', { approved: true }, fetchMock);
+    const result = await raiseEvent(
+      TARGET,
+      TOKEN,
+      'abc123',
+      'Approval',
+      { approved: true },
+      fetchMock
+    );
 
     expect(result.ok).toBe(true);
     const url = urlOf(fetchMock);
-    expect(url.pathname).toBe('/runtime/webhooks/durabletask/instances/abc123/raiseEvent/Approval');
+    expect(url.pathname).toBe(`${WEBHOOK_PATH}/instances/abc123/raiseEvent/Approval`);
     const init = (fetchMock.mock.calls[0] as [string, RequestInit])[1];
     expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
     expect(init.body).toBe('{"approved":true}');
@@ -452,7 +459,7 @@ describe('actions', () => {
   it('raiseEvent url-encodes the event name', async () => {
     const fetchMock = mockFetch(new Response('', { status: 202 }));
 
-    await raiseEvent(TARGET, 'abc123', 'my event/1', '"payload"', fetchMock);
+    await raiseEvent(TARGET, TOKEN, 'abc123', 'my event/1', '"payload"', fetchMock);
 
     expect((fetchMock.mock.calls[0] as [string])[0]).toContain('raiseEvent/my%20event%2F1');
   });
@@ -460,17 +467,20 @@ describe('actions', () => {
   it('purge DELETEs the instance route with no operation segment', async () => {
     const fetchMock = mockFetch(jsonResponse({ instancesDeleted: 1 }));
 
-    const result = await purgeInstance(TARGET, 'abc123', fetchMock);
+    const result = await purgeInstance(TARGET, TOKEN, 'abc123', fetchMock);
 
     expect(result.ok).toBe(true);
-    expect(urlOf(fetchMock).pathname).toBe('/runtime/webhooks/durabletask/instances/abc123');
-    expect((fetchMock.mock.calls[0] as [string, RequestInit])[1].method).toBe('DELETE');
+    expect(urlOf(fetchMock).pathname).toBe(`${WEBHOOK_PATH}/instances/abc123`);
+    const init = (fetchMock.mock.calls[0] as [string, RequestInit])[1];
+    expect(init.method).toBe('DELETE');
+    // Same 411 constraint as POST: DELETE must carry a Content-Length too.
+    expect(init.body).toBe('');
   });
 
   it('surfaces 410 Gone (already completed) as an http error', async () => {
     const fetchMock = mockFetch(new Response('instance completed', { status: 410 }));
 
-    const result = await terminateInstance(TARGET, 'abc123', UPN, 'too late now', fetchMock);
+    const result = await terminateInstance(TARGET, TOKEN, 'abc123', UPN, 'too late now', fetchMock);
 
     expect(result).toMatchObject({ ok: false, error: { kind: 'http', status: 410 } });
   });
@@ -516,7 +526,7 @@ describe('history events, as the runtime really emits them', () => {
       })
     );
 
-    const result = await getInstance(TARGET, 'abc123', fetchMock);
+    const result = await getInstance(TARGET, TOKEN, 'abc123', fetchMock);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -538,7 +548,7 @@ describe('history events, as the runtime really emits them', () => {
     };
     const fetchMock = mockFetch(jsonResponse({ ...instanceRow(), historyEvents: [realFailure] }));
 
-    const result = await getInstance(TARGET, 'abc123', fetchMock);
+    const result = await getInstance(TARGET, TOKEN, 'abc123', fetchMock);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -563,7 +573,7 @@ describe('countFailedInstances', () => {
       ])
     );
 
-    const result = await countFailedInstances(TARGET, fetchMock);
+    const result = await countFailedInstances(TARGET, TOKEN, fetchMock);
 
     expect(result).toEqual({ ok: true, value: { count: 2, more: false } });
     // It must ask only for the attention statuses, cheaply.
@@ -579,7 +589,7 @@ describe('countFailedInstances', () => {
       })
     );
 
-    const result = await countFailedInstances(TARGET, fetchMock);
+    const result = await countFailedInstances(TARGET, TOKEN, fetchMock);
 
     expect(result).toMatchObject({ ok: true, value: { count: 1, more: true } });
   });
@@ -587,7 +597,7 @@ describe('countFailedInstances', () => {
   it('returns zero for a healthy app', async () => {
     const fetchMock = mockFetch(jsonResponse([]));
 
-    const result = await countFailedInstances(TARGET, fetchMock);
+    const result = await countFailedInstances(TARGET, TOKEN, fetchMock);
 
     expect(result).toEqual({ ok: true, value: { count: 0, more: false } });
   });
@@ -595,7 +605,7 @@ describe('countFailedInstances', () => {
   it('propagates the error when the app cannot be queried', async () => {
     const fetchMock = mockFetch(new Response('nope', { status: 403 }));
 
-    const result = await countFailedInstances(TARGET, fetchMock);
+    const result = await countFailedInstances(TARGET, TOKEN, fetchMock);
 
     expect(result).toMatchObject({ ok: false, error: { kind: 'forbidden' } });
   });

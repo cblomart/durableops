@@ -37,45 +37,15 @@ export interface NotDurableError {
 }
 
 /**
- * The browser refused to hand us the response, so `fetch` threw with no status
- * and no headers to inspect.
+ * Anything else, including 429 and a status-0 network failure.
  *
- * Two different faults land here and the browser cannot tell them apart:
- *   1. the app does not list our origin in its CORS allow-list (most common), or
- *   2. the app has Easy Auth on, and its redirect/401 carries no CORS headers.
+ * A `status: 0` here is a real transport failure (offline, DNS, blocked by
+ * policy) — never a CORS rejection: every Azure call goes through
+ * management.azure.com, which sends permissive CORS headers, so the browser
+ * never blocks the cross-origin request the way a direct app-hostname call could.
  *
- * Because the distinction is invisible from a browser, `describeError` names
- * both causes rather than confidently pointing at the wrong one. Only the Node
- * integration tests — where CORS does not apply — can positively identify Easy
- * Auth and return `EasyAuthError` instead.
+ * `retryAfterSeconds` is set when Azure sent Retry-After.
  */
-export interface CorsError {
-  kind: 'cors';
-  message: string;
-}
-
-/**
- * The function app has App Service Authentication ("Easy Auth") enabled.
- *
- * Easy Auth sits in front of the Functions host, so it rejects or redirects the
- * request *before* the runtime ever evaluates the `?code=` system key. A valid
- * key still yields 401/302. Verified live during the design spike against a real
- * app with `unauthenticatedClientAction: RedirectToLoginPage`.
- *
- * From a browser this is nastier than it sounds: the 302 to login.microsoftonline.com
- * carries no CORS headers, so `fetch` reports an opaque network failure that is
- * indistinguishable from a plain CORS misconfiguration — but the remediation is
- * completely different (exclude the durabletask webhook path from Easy Auth, or
- * accept that the app is unreachable from a browser-only tool). We keep it as a
- * distinct variant so the UI can offer the right fix instead of sending the
- * operator down the CORS path.
- */
-export interface EasyAuthError {
-  kind: 'easyAuth';
-  message: string;
-}
-
-/** Anything else, including 429. `retryAfterSeconds` is set when Azure sent Retry-After. */
 export interface HttpError {
   kind: 'http';
   status: number;
@@ -83,8 +53,7 @@ export interface HttpError {
   retryAfterSeconds?: number;
 }
 
-export type ApiError =
-  AuthError | ForbiddenError | NotDurableError | CorsError | EasyAuthError | HttpError;
+export type ApiError = AuthError | ForbiddenError | NotDurableError | HttpError;
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: ApiError };
 
@@ -113,21 +82,13 @@ export function describeError(error: ApiError): string {
       return "You don't have permission to operate on this app — activate your PIM role, then click Refresh rights.";
     case 'notDurable':
       return 'This app has no Durable Functions extension, so there is nothing to troubleshoot here.';
-    case 'cors':
-      // The browser gives us no status or headers here, so this message must not
-      // pretend to know which of the two causes it is: sending an operator to
-      // fix CORS on an Easy Auth app wastes an incident.
-      return (
-        'The browser blocked this request before DurableOps could read the response. ' +
-        "Either the app's CORS allow-list is missing this origin (most likely), or the app " +
-        'has App Service Authentication (Easy Auth) enabled, which rejects the call before ' +
-        'the Durable Functions runtime sees it. See "CORS prerequisite" and "Easy Auth" in the README.'
-      );
-    case 'easyAuth':
-      return 'This app sits behind App Service Authentication (Easy Auth), which rejects the request before the Durable Functions runtime sees it. A valid system key cannot get past it — see "Easy Auth" in the README.';
     case 'http':
-      return error.status === 429
-        ? `Azure is throttling this request. Retry in ${String(error.retryAfterSeconds ?? 30)}s.`
-        : `Azure returned HTTP ${String(error.status)}: ${error.message}`;
+      if (error.status === 429) {
+        return `Azure is throttling this request. Retry in ${String(error.retryAfterSeconds ?? 30)}s.`;
+      }
+      if (error.status === 0) {
+        return 'Could not reach Azure (management.azure.com). Check your connection and try again.';
+      }
+      return `Azure returned HTTP ${String(error.status)}: ${error.message}`;
   }
 }

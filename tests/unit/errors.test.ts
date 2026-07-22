@@ -23,8 +23,6 @@ describe('isPimRecoverable', () => {
 
   it.each<ApiError>([
     { kind: 'notDurable', message: '' },
-    { kind: 'cors', message: '' },
-    { kind: 'easyAuth', message: '' },
     { kind: 'http', status: 500, message: '' },
   ])('does not offer a PIM prompt for $kind, which PIM cannot fix', (error) => {
     expect(isPimRecoverable(error)).toBe(false);
@@ -38,21 +36,10 @@ describe('describeError', () => {
     expect(text).toContain('Refresh rights');
   });
 
-  it('sends a CORS failure to the CORS remediation, not to PIM', () => {
-    const text = describeError({ kind: 'cors', message: '' });
-    expect(text).toContain('CORS');
+  it('names a status-0 network failure as an Azure-reachability problem, not PIM', () => {
+    const text = describeError({ kind: 'http', status: 0, message: '' });
+    expect(text).toContain('management.azure.com');
     expect(text).not.toContain('PIM');
-  });
-
-  /*
-   * Easy Auth and CORS both surface as opaque browser failures, so the two
-   * messages must never be confusable: they have completely different fixes.
-   */
-  it('distinguishes Easy Auth from a plain CORS misconfiguration', () => {
-    const text = describeError({ kind: 'easyAuth', message: '' });
-    expect(text).toContain('Easy Auth');
-    expect(text).toContain('system key');
-    expect(text).not.toBe(describeError({ kind: 'cors', message: '' }));
   });
 
   it('reports Retry-After seconds on a 429', () => {

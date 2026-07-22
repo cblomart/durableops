@@ -1,14 +1,11 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   discoverFunctionApps,
-  getDurableSystemKey,
   classifyDurable,
   classifyDurableApps,
   checkOperability,
   checkOperabilityForApps,
   getTenantName,
-  clearKeyCache,
-  cachedKeyCount,
   type FunctionApp,
 } from '../../src/api/arm';
 
@@ -47,10 +44,6 @@ function errorResponse(status: number, body = 'denied', headers: Record<string, 
 function alwaysRespond(factory: () => Response): typeof fetch {
   return vi.fn().mockImplementation(() => Promise.resolve(factory()));
 }
-
-beforeEach(() => {
-  clearKeyCache();
-});
 
 describe('discoverFunctionApps', () => {
   it('returns the apps ARG reports, mapped to typed rows', async () => {
@@ -217,101 +210,6 @@ describe('discoverFunctionApps', () => {
     const result = await discoverFunctionApps(TOKEN, fetchMock);
 
     expect(result.ok).toBe(false);
-  });
-});
-
-describe('getDurableSystemKey', () => {
-  const app: FunctionApp = {
-    id: '/subscriptions/sub-1/resourceGroups/RG-acme/providers/Microsoft.Web/sites/func-a',
-    name: 'func-a',
-    resourceGroup: 'RG-acme',
-    subscriptionId: 'sub-1',
-    location: 'westeurope',
-    kind: 'functionapp',
-    defaultHostName: 'func-a.azurewebsites.net',
-    state: 'Running',
-  };
-
-  it('returns the durabletask_extension system key', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({
-        masterKey: 'master-should-be-ignored',
-        systemKeys: { durabletask_extension: 'the-key' },
-      })
-    );
-
-    const result = await getDurableSystemKey(app, TOKEN, fetchMock);
-
-    expect(result).toEqual({ ok: true, value: 'the-key' });
-    const [url] = fetchMock.mock.calls[0] as [string];
-    expect(url).toContain('/host/default/listkeys');
-    expect(url).toContain('api-version=2023-12-01');
-  });
-
-  it('caches the key in memory and does not call ARM twice', async () => {
-    const fetchMock = alwaysRespond(() =>
-      jsonResponse({ systemKeys: { durabletask_extension: 'the-key' } })
-    );
-
-    await getDurableSystemKey(app, TOKEN, fetchMock);
-    const second = await getDurableSystemKey(app, TOKEN, fetchMock);
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(second).toEqual({ ok: true, value: 'the-key' });
-    expect(cachedKeyCount()).toBe(1);
-  });
-
-  it('clearKeyCache drops every cached key (sign-out / Refresh rights)', async () => {
-    const fetchMock = alwaysRespond(() =>
-      jsonResponse({ systemKeys: { durabletask_extension: 'the-key' } })
-    );
-
-    await getDurableSystemKey(app, TOKEN, fetchMock);
-    expect(cachedKeyCount()).toBe(1);
-
-    clearKeyCache();
-
-    // The key must be re-fetched from ARM, proving nothing survived the clear.
-    expect(cachedKeyCount()).toBe(0);
-    await getDurableSystemKey(app, TOKEN, fetchMock);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it('maps 403 to forbidden and tags the app name for the PIM message', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(errorResponse(403, 'no listkeys for you'));
-
-    const result = await getDurableSystemKey(app, TOKEN, fetchMock);
-
-    expect(result).toMatchObject({
-      ok: false,
-      error: { kind: 'forbidden', scope: 'func-a' },
-    });
-  });
-
-  it('does not cache anything when the call fails', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(errorResponse(403));
-
-    await getDurableSystemKey(app, TOKEN, fetchMock);
-
-    expect(cachedKeyCount()).toBe(0);
-  });
-
-  it('reports notDurable when the app has system keys but no durabletask_extension', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(jsonResponse({ systemKeys: { eventgrid_extension: 'other' } }));
-
-    const result = await getDurableSystemKey(app, TOKEN, fetchMock);
-
-    expect(result).toMatchObject({ ok: false, error: { kind: 'notDurable' } });
-  });
-
-  it('reports notDurable when the app exposes no system keys at all', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ functionKeys: {} }));
-
-    const result = await getDurableSystemKey(app, TOKEN, fetchMock);
-
-    expect(result).toMatchObject({ ok: false, error: { kind: 'notDurable' } });
   });
 });
 
@@ -484,12 +382,12 @@ function permissions(actions: string[], notActions: string[] = []): Record<strin
 const SCOPE = '/subscriptions/sub-1';
 
 describe('checkOperability', () => {
-  it('says yes when the role grants listkeys explicitly', async () => {
+  it('says yes when the role grants the hostruntime action explicitly', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValue(
         jsonResponse(
-          permissions(['Microsoft.Web/sites/read', 'Microsoft.Web/sites/host/listkeys/action'])
+          permissions(['Microsoft.Web/sites/read', 'Microsoft.Web/sites/hostruntime/host/action'])
         )
       );
 
@@ -503,14 +401,15 @@ describe('checkOperability', () => {
     ['Owner/Contributor', ['*']],
     ['Website Contributor', ['Microsoft.Web/sites/*']],
     ['a broad Web wildcard', ['Microsoft.Web/*']],
-  ])('resolves wildcards: %s grants listkeys', async (_label, actions) => {
+  ])('resolves wildcards: %s grants the operate action', async (_label, actions) => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(permissions(actions)));
 
     await expect(checkOperability(SCOPE, TOKEN, fetchMock)).resolves.toBe('yes');
   });
 
   /* Reader is the exact trap this whole filter exists for: it can SEE every app
-   * but cannot fetch a key, so it can operate nothing. */
+   * but holds only read actions, so it can invoke no host runtime and operate
+   * nothing. */
   it('says no for Reader, which can see everything but operate nothing', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(permissions(['*/read'])));
 
@@ -521,7 +420,7 @@ describe('checkOperability', () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValue(
-        jsonResponse(permissions(['*'], ['Microsoft.Web/sites/host/listkeys/action']))
+        jsonResponse(permissions(['*'], ['Microsoft.Web/sites/hostruntime/host/action']))
       );
 
     await expect(checkOperability(SCOPE, TOKEN, fetchMock)).resolves.toBe('no');
@@ -532,7 +431,7 @@ describe('checkOperability', () => {
       jsonResponse({
         value: [
           { actions: ['*/read'], notActions: [] },
-          { actions: ['Microsoft.Web/sites/host/listkeys/action'], notActions: [] },
+          { actions: ['Microsoft.Web/sites/hostruntime/host/action'], notActions: [] },
         ],
       })
     );
@@ -543,7 +442,9 @@ describe('checkOperability', () => {
   it('matches action names case-insensitively, as Azure does', async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValue(jsonResponse(permissions(['MICROSOFT.WEB/SITES/HOST/LISTKEYS/ACTION'])));
+      .mockResolvedValue(
+        jsonResponse(permissions(['MICROSOFT.WEB/SITES/HOSTRUNTIME/HOST/ACTION']))
+      );
 
     await expect(checkOperability(SCOPE, TOKEN, fetchMock)).resolves.toBe('yes');
   });
@@ -579,10 +480,10 @@ describe('checkOperabilityForApps', () => {
    * Roles are normally assigned at subscription/MG scope and inherit, so one
    * check should settle a whole subscription rather than one call per app.
    */
-  it('checks once per subscription when the subscription already grants listkeys', async () => {
+  it('checks once per subscription when the subscription already grants the action', async () => {
     const apps = [appIn('sub-1', 1), appIn('sub-1', 2), appIn('sub-1', 3)];
     const fetchMock = alwaysRespond(() =>
-      jsonResponse(permissions(['Microsoft.Web/sites/host/listkeys/action']))
+      jsonResponse(permissions(['Microsoft.Web/sites/hostruntime/host/action']))
     );
     const results = new Map<string, string>();
 

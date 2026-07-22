@@ -10,14 +10,12 @@ const props = defineProps<{
   loading: boolean;
   /** App id -> durable classification. Absent while still being checked. */
   durable: Map<string, DurableKind>;
-  /** App id -> whether the user holds listkeys on it. Absent while still being checked. */
+  /** App id -> whether the user can invoke its host runtime. Absent while still being checked. */
   operable: Map<string, Operability>;
   /** True while the fleet is still being classified. */
   classifying: boolean;
   /** App id -> failed instance count, filled in as rows are scanned. */
   failureScan: Map<string, FailureCount>;
-  /** App id -> why the app's data plane is unreachable from this browser (CORS / Easy Auth). */
-  unreachable: Map<string, 'cors' | 'easyAuth'>;
   /** True while any opportunistic scan is in flight. */
   scanning: boolean;
   /** App ids being scanned right now, so a row's refresh button can spin. */
@@ -40,17 +38,12 @@ function failuresOf(app: FunctionApp): FailureCount | null {
   return props.failureScan.get(app.id) ?? null;
 }
 
-/** True when the scan found the app's data plane blocked (CORS / Easy Auth). */
-function isUnreachable(app: FunctionApp): boolean {
-  return props.unreachable.has(app.id);
-}
-
 /**
  * Only apps the operator can actually act on.
  *
  * Two separate filters, both hiding only *confirmed* negatives:
- *  - `operable === 'no'`: discovery shows what you can READ; without listkeys
- *    you can do nothing with the app, so listing it is noise.
+ *  - `operable === 'no'`: discovery shows what you can READ; without the right to
+ *    invoke the app's host runtime you can do nothing with it, so listing it is noise.
  *  - `durable === 'no'`: it runs no Durable Functions, so there is nothing here.
  *
  * `unknown` never hides anything — that would silently drop work we merely
@@ -228,10 +221,7 @@ watch([visible, () => props.loading, () => props.classifying], () => void nextTi
             :key="app.id"
             :data-app-id="app.id"
             class="row"
-            :class="{
-              problem: (failuresOf(app)?.count ?? 0) > 0,
-              blockedrow: isUnreachable(app),
-            }"
+            :class="{ problem: (failuresOf(app)?.count ?? 0) > 0 }"
             @click="$emit('select', app)"
           >
             <td class="star">
@@ -262,20 +252,8 @@ watch([visible, () => props.loading, () => props.classifying], () => void nextTi
             Kept out of the Name cell so the app's name stays its own identity.
           -->
             <td class="health">
-              <!--
-              An app whose data plane the browser cannot reach (CORS/Easy Auth)
-              can't be scanned at all, so it leads with a fixable-config flag
-              rather than a blank or a misleading tick. Opening it shows the exact
-              origin and command to fix it.
-            -->
               <span
-                v-if="isUnreachable(app)"
-                class="blocked"
-                title="Unreachable from this browser — the app must allow this origin (CORS) or exclude the durabletask path from Easy Auth. Open it for the exact fix."
-                >⚠ unreachable</span
-              >
-              <span
-                v-else-if="failuresOf(app) && failuresOf(app)!.count > 0"
+                v-if="failuresOf(app) && failuresOf(app)!.count > 0"
                 class="failcount"
                 :title="`${failuresOf(app)!.count}${failuresOf(app)!.more ? '+' : ''} failed or terminated instance(s)`"
               >
@@ -402,11 +380,6 @@ watch([visible, () => props.loading, () => props.classifying], () => void nextTi
   box-shadow: inset 3px 0 0 var(--danger);
 }
 
-/* Unreachable: a quieter amber edge — noticeable, but not the red of a failure. */
-.row.blockedrow > td:first-child {
-  box-shadow: inset 3px 0 0 var(--warn);
-}
-
 .name {
   font-weight: 500;
 }
@@ -437,14 +410,6 @@ watch([visible, () => props.loading, () => props.classifying], () => void nextTi
   margin-left: 10px;
   font-size: 11px;
   color: var(--ok);
-}
-
-/* A config gap, not a failure: warn amber, not the red reserved for failures. */
-.blocked {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--warn);
-  cursor: help;
 }
 
 .star {

@@ -6,8 +6,6 @@ import RefreshButton from './RefreshButton.vue';
 defineProps<{
   user: SignedInUser | null;
   busy: boolean;
-  /** System keys currently held in memory — surfaced so the operator can see the tool holds nothing at rest. */
-  keysInMemory: number;
   /** Resolved tenant display name, e.g. "SureStacks". */
   tenantName: string;
 }>();
@@ -30,26 +28,16 @@ defineEmits<{
     <template v-if="user">
       <!--
         "Refresh rights" is the post-PIM-activation gesture and the reason this
-        tool needs no re-login: it drops every cached key and forces a fresh
-        token, so newly activated roles take effect within moments.
+        tool needs no re-login: it forces a fresh token and re-runs discovery, so
+        newly activated roles take effect within moments.
       -->
-      <span
-        title="Activated a PIM role? Drops cached keys, forces a fresh token, and re-runs discovery."
-      >
+      <span title="Activated a PIM role? Forces a fresh token and re-runs discovery.">
         <RefreshButton
           label="Refresh rights"
           text="Refresh rights"
           :busy="busy"
           @refresh="$emit('refreshRights')"
         />
-      </span>
-
-      <span
-        v-if="keysInMemory > 0"
-        class="keys faint"
-        :title="`${keysInMemory} system key(s) held in memory only, cleared on sign-out`"
-      >
-        {{ keysInMemory }} key{{ keysInMemory === 1 ? '' : 's' }} in memory
       </span>
     </template>
 
@@ -87,12 +75,5 @@ defineEmits<{
 
 .spacer {
   flex: 1;
-}
-
-.keys {
-  font-size: 11px;
-  padding: 2px 6px;
-  border: 1px dashed var(--border);
-  border-radius: 3px;
 }
 </style>

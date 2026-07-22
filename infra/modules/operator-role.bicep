@@ -1,15 +1,17 @@
 // The "DurableOps Operator" custom role.
 //
-// Least privilege that actually works: reading the app list needs
-// `sites/read`, and fetching the durable system key needs
-// `sites/host/listkeys/action`. Nothing else is required, so nothing else is
-// granted.
+// Least privilege that actually works: reading the app list needs `sites/read`,
+// and every Durable operation — listing instances and acting on them — goes
+// through the app's host runtime, which needs `sites/hostruntime/*`. Nothing
+// else is granted.
 //
-// Intended to be assigned as PIM-ELIGIBLE, not permanent. `listkeys/action` is
-// deliberately powerful — the same response also carries the app's master key
-// (Azure exposes no finer-grained permission for the durable system key), so the
-// right control is a time-boxed activation rather than a standing assignment.
-// DurableOps reads only systemKeys.durabletask_extension and ignores the rest.
+// This role holds NO `listkeys` permission. DurableOps reaches the Durable
+// webhook API through ARM's hostruntime proxy, authorised by the caller's ARM
+// token, so it never fetches an app's system key — nor the master key the same
+// listkeys response would also expose. That removes the sharpest edge the old
+// role had. The hostruntime actions are still management-plane operations on the
+// app's runtime, so this is best assigned PIM-ELIGIBLE and activated for a triage
+// window, not left standing.
 //
 // Creating a role definition needs Microsoft.Authorization/roleDefinitions/write
 // (Owner or User Access Administrator), which is why main.bicep gates this
@@ -24,13 +26,13 @@ resource operatorRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
   name: guid(subscription().id, roleName)
   properties: {
     roleName: roleName
-    description: 'Read function apps and retrieve the durabletask system key, nothing else. Intended to be assigned as PIM-eligible and activated for a triage window.'
+    description: 'Read function apps and invoke their host runtime (the Durable webhook API via ARM), nothing else. No listkeys or system-key access. Intended to be assigned as PIM-eligible and activated for a triage window.'
     type: 'CustomRole'
     permissions: [
       {
         actions: [
           'Microsoft.Web/sites/read'
-          'Microsoft.Web/sites/host/listkeys/action'
+          'Microsoft.Web/sites/hostruntime/*'
         ]
         notActions: []
         dataActions: []

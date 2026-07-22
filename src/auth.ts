@@ -18,7 +18,6 @@ import {
   type Configuration,
 } from '@azure/msal-browser';
 import { ARM_SCOPE, getConfig } from './config';
-import { clearKeyCache } from './api/arm';
 
 export interface SignedInUser {
   /** UPN / username. Shown in the top bar and prefixed onto every action reason. */
@@ -150,9 +149,6 @@ export async function signIn(): Promise<void> {
 }
 
 export async function signOut(): Promise<void> {
-  // Drop in-memory system keys before the redirect so a key cannot outlive the
-  // session even if the redirect is slow or cancelled.
-  clearKeyCache();
   await client().logoutRedirect();
 }
 

@@ -6,10 +6,13 @@
     <title>DurableOps</title>
 
     <!--
-      Strict CSP. DurableOps talks to exactly three origins and nothing else:
+      Strict CSP. DurableOps talks to exactly two origins and nothing else:
         - login.microsoftonline.com : Entra sign-in and token acquisition
-        - management.azure.com      : Resource Graph discovery + listkeys
-        - *.azurewebsites.net       : the durable webhook API on each function app
+        - management.azure.com      : ARM — app discovery, durable classification,
+                                      permission checks, AND the Durable webhook
+                                      API itself, reached through the hostruntime
+                                      proxy. Nothing calls a function app's own
+                                      hostname, so no *.azurewebsites.net is needed.
 
       No inline scripts ('unsafe-inline' is absent from script-src by design, so
       an injected <script> or event-handler attribute cannot execute). If a call
@@ -18,8 +21,9 @@
       telemetry to exempt.
 
       Note: connect-src is deliberately NOT 'self'-only — but it is also not '*'.
-      Custom-domain function apps or sovereign clouds need this list extended at
-      deploy time; see README "CSP and custom domains".
+      A sovereign-cloud deploy points at a different ARM endpoint
+      (management.usgovcloudapi.net, etc.) and needs this list adjusted at deploy
+      time; see README "CSP and custom domains".
     -->
     <meta
       http-equiv="Content-Security-Policy"
@@ -29,7 +33,7 @@
         style-src 'self';
         img-src 'self' data:;
         font-src 'self';
-        connect-src 'self' https://login.microsoftonline.com https://management.azure.com https://*.azurewebsites.net;
+        connect-src 'self' https://login.microsoftonline.com https://management.azure.com;
         form-action 'self' https://login.microsoftonline.com;
         base-uri 'none';
         object-src 'none';

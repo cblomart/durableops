@@ -5,18 +5,14 @@ import AppList from './components/AppList.vue';
 import InstanceList from './components/InstanceList.vue';
 import InstanceDetail from './components/InstanceDetail.vue';
 import RefreshButton from './components/RefreshButton.vue';
-import CopyButton from './components/CopyButton.vue';
 import AboutDialog from './components/AboutDialog.vue';
 import { emptyFilters, type Filters } from './filters';
 import { getArmToken, getSignedInUser, signIn, signOut, type SignedInUser } from './auth';
 import { adminConsentUrl, getConfig } from './config';
 import {
-  cachedKeyCount,
   checkOperabilityForApps,
   classifyDurableApps,
-  clearKeyCache,
   discoverFunctionApps,
-  getDurableSystemKey,
   getTenantName,
   type DurableKind,
   type FunctionApp,
@@ -47,7 +43,6 @@ const apps = ref<FunctionApp[]>([]);
 const loading = ref(false);
 const busy = ref(false);
 const error = ref<ApiError | null>(null);
-const keysInMemory = ref(0);
 
 /**
  * App id -> durable classification, filled in progressively after discovery.
@@ -59,11 +54,12 @@ const keysInMemory = ref(0);
 const durable = ref(new Map<string, DurableKind>());
 
 /**
- * App id -> whether the user can actually operate it (holds `listkeys`).
+ * App id -> whether the user can actually operate it (can invoke its host runtime).
  *
  * Discovery returns what the user can READ, which is not the same as what they
- * can DO — Reader shows the whole tenant but cannot fetch a key. Listing apps
- * the operator is powerless over is noise, so confirmed-unusable apps are hidden.
+ * can DO — Reader shows the whole tenant but cannot invoke any host runtime.
+ * Listing apps the operator is powerless over is noise, so confirmed-unusable
+ * apps are hidden.
  */
 const operable = ref(new Map<string, Operability>());
 const classifying = ref(false);
@@ -83,15 +79,6 @@ const tenantName = ref(user.value?.tenantId ?? '');
  * this runs automatically; the bounded queue keeps it from storming any app.
  */
 const failureScan = ref(new Map<string, FailureCount>());
-/**
- * App id -> why its data plane is unreachable from this browser.
- *
- * The scan calls the app's own hostname directly (no backend), so an app whose
- * CORS list omits our origin — or that sits behind Easy Auth — fails the browser's
- * cross-origin check before we read anything. That is a fixable config gap, not a
- * failure of the app, so we flag it rather than leave the row blank.
- */
-const unreachable = ref(new Map<string, 'cors' | 'easyAuth'>());
 /** app id -> when it was last scanned, so a visible row can refresh lazily. */
 const scannedAt = new Map<string, number>();
 const scanning = ref(false);
@@ -128,33 +115,14 @@ function rescanApp(app: FunctionApp): void {
   enqueueScan(app, true);
 }
 
-function setUnreachable(id: string, kind: 'cors' | 'easyAuth'): void {
-  unreachable.value = new Map(unreachable.value).set(id, kind);
-}
-
-function clearUnreachable(id: string): void {
-  if (!unreachable.value.has(id)) return;
-  const next = new Map(unreachable.value);
-  next.delete(id);
-  unreachable.value = next;
-}
-
 async function scanOne(app: FunctionApp): Promise<void> {
   try {
     const token = await getArmToken();
-    const key = await getDurableSystemKey(app, token);
-    keysInMemory.value = cachedKeyCount();
-    if (!key.ok) return;
-    const scan = await countFailedInstances({
-      hostName: app.defaultHostName,
-      systemKey: key.value,
-    });
+    // Through the ARM proxy the scan needs no system key: the resource ID and the
+    // user's ARM token are enough, and Azure RBAC authorises it.
+    const scan = await countFailedInstances({ resourceId: app.id }, token);
     if (scan.ok) {
       failureScan.value = new Map(failureScan.value).set(app.id, scan.value);
-      clearUnreachable(app.id);
-    } else if (scan.error.kind === 'cors' || scan.error.kind === 'easyAuth') {
-      // The scan is the real data-plane call, so it detects the block for free.
-      setUnreachable(app.id, scan.error.kind);
     }
   } catch {
     // A single app's scan failing must never break the list.
@@ -212,7 +180,7 @@ function setError(cause: unknown): void {
   };
 }
 
-/** This app's own origin — the value an operator adds to a blocked app's CORS list. */
+/** This app's own origin — the redirect URI used for admin consent. */
 const appOrigin = window.location.origin;
 
 /** Tenant admin-consent URL, for the signed-out landing's "grant access" button. */
@@ -230,13 +198,6 @@ const showAbout = ref(false);
 const showGitHubStar = getConfig().showGitHubStar === true;
 const donateUrl = getConfig().donateUrl;
 const REPO_URL = 'https://github.com/cblomart/durableops';
-
-/** A ready-to-run command to allow this origin on the currently open app. */
-const corsCommand = computed(() => {
-  const app = selectedApp.value;
-  if (app === null) return '';
-  return `az functionapp cors add -g ${app.resourceGroup} -n ${app.name} --allowed-origins "${appOrigin}"`;
-});
 
 /**
  * Work out what the operator can actually use, in the background.
@@ -290,26 +251,22 @@ async function discover(forceRefresh = false): Promise<void> {
     setError(cause);
   } finally {
     loading.value = false;
-    keysInMemory.value = cachedKeyCount();
   }
 }
 
 /**
  * The post-PIM-activation gesture.
  *
- * Order matters: drop cached keys and loaded data first, so a failure part-way
- * through cannot leave stale, over-privileged state on screen. Then force a
- * fresh ARM token (carrying newly activated role claims) and re-discover.
+ * Order matters: drop loaded data first, so a failure part-way through cannot
+ * leave stale, over-privileged state on screen. Then force a fresh ARM token
+ * (carrying newly activated role claims) and re-discover.
  */
 async function refreshRights(): Promise<void> {
   busy.value = true;
-  clearKeyCache();
-  keysInMemory.value = 0;
   apps.value = [];
   durable.value = new Map();
   operable.value = new Map();
   failureScan.value = new Map();
-  unreachable.value = new Map();
   scannedAt.clear();
   scanQueue.length = 0;
   scanningIds.value = new Set();
@@ -346,13 +303,16 @@ function buildQuery(token?: string) {
 let fetchToken = 0;
 
 async function fetchInstances(append = false): Promise<void> {
-  if (target.value === null) return;
+  const t = target.value;
+  if (t === null) return;
   const token = ++fetchToken;
   loading.value = true;
   error.value = null;
   try {
+    const armToken = await getArmToken();
     const result = await listInstances(
-      target.value,
+      t,
+      armToken,
       buildQuery(append ? continuationToken.value : undefined)
     );
     if (token !== fetchToken) return; // a newer fetch superseded this one
@@ -377,34 +337,32 @@ async function openApp(app: FunctionApp): Promise<void> {
   filters.value = filtersByApp.get(app.id) ?? emptyFilters();
   instances.value = [];
   continuationToken.value = undefined;
-  error.value = null;
   loading.value = true;
 
   try {
-    const token = await getArmToken();
-    // The system key is fetched only now — opening an app, not listing them.
-    const key = await getDurableSystemKey(app, token);
-    keysInMemory.value = cachedKeyCount();
-    if (!key.ok) {
-      error.value = key.error;
-      target.value = null;
-      return;
-    }
-    target.value = { hostName: app.defaultHostName, systemKey: key.value };
+    // Addressing only: the ARM token is acquired per call (it expires), and RBAC
+    // — not a system key — decides whether the first fetch is allowed. fetchInstances
+    // clears any prior error, so the finally can read it to tell open from failure.
+    target.value = { resourceId: app.id };
     await fetchInstances();
   } catch (cause: unknown) {
     setError(cause);
   } finally {
     loading.value = false;
+    // A failed open leaves no target, so applyRoute can tell open from success
+    // and the empty instance table never renders under a permission error.
+    if (error.value !== null) target.value = null;
   }
 }
 
 async function openInstanceById(instanceId: string): Promise<void> {
-  if (target.value === null) return;
+  const t = target.value;
+  if (t === null) return;
   loading.value = true;
   error.value = null;
   try {
-    const result = await getInstance(target.value, instanceId);
+    const armToken = await getArmToken();
+    const result = await getInstance(t, armToken, instanceId);
     if (result.ok) detail.value = result.value;
     else error.value = result.error;
   } catch (cause: unknown) {
@@ -441,10 +399,12 @@ const detailRefreshing = ref(false);
 
 async function refreshDetail(): Promise<void> {
   const current = detail.value;
-  if (current === null || target.value === null || detailRefreshing.value) return;
+  const t = target.value;
+  if (current === null || t === null || detailRefreshing.value) return;
   detailRefreshing.value = true;
   try {
-    const result = await getInstance(target.value, current.instanceId);
+    const armToken = await getArmToken();
+    const result = await getInstance(t, armToken, current.instanceId);
     if (result.ok) detail.value = result.value;
     else error.value = result.error;
   } catch (cause: unknown) {
@@ -475,15 +435,22 @@ async function runAction(
   const reason = args.reason ?? '';
   const upn = signedIn.upn;
 
+  let armToken: string;
+  try {
+    armToken = await getArmToken();
+  } catch {
+    return err({ kind: 'auth', message: 'Could not acquire an Azure token' });
+  }
+
   // A dispatch table rather than a switch: one entry per action, each a thunk.
   const handlers: Record<InstanceAction, () => Promise<Result<void>>> = {
-    terminate: () => terminateInstance(t, id, upn, reason),
-    rewind: () => rewindInstance(t, id, upn, reason),
-    suspend: () => suspendInstance(t, id, upn, reason),
-    resume: () => resumeInstance(t, id, upn, reason),
-    restart: () => restartInstance(t, id, false),
-    purge: () => purgeInstance(t, id),
-    raiseEvent: () => raiseEvent(t, id, args.eventName ?? '', args.payload),
+    terminate: () => terminateInstance(t, armToken, id, upn, reason),
+    rewind: () => rewindInstance(t, armToken, id, upn, reason),
+    suspend: () => suspendInstance(t, armToken, id, upn, reason),
+    resume: () => resumeInstance(t, armToken, id, upn, reason),
+    restart: () => restartInstance(t, armToken, id, false),
+    purge: () => purgeInstance(t, armToken, id),
+    raiseEvent: () => raiseEvent(t, armToken, id, args.eventName ?? '', args.payload),
   };
   return handlers[action]();
 }
@@ -505,14 +472,22 @@ function onActionDone(action: InstanceAction): void {
   if (current === null || target.value === null) return;
   const instanceId = current.instanceId;
   window.setTimeout(() => {
-    // Re-read state here: 2s is long enough for the operator to have navigated
-    // away (target cleared) or opened a different instance. Both would make this
-    // re-fetch wrong, so guard rather than cast the null away.
-    const t = target.value;
-    if (t === null || detail.value?.instanceId !== instanceId) return;
-    void getInstance(t, instanceId).then((result) => {
-      if (result.ok && detail.value?.instanceId === instanceId) detail.value = result.value;
-    });
+    void (async () => {
+      // Re-read state here: 2s is long enough for the operator to have navigated
+      // away (target cleared) or opened a different instance. Both would make this
+      // re-fetch wrong, so guard rather than cast the null away. `openId` is read
+      // into a local so `detail.value` stays nullable across the await below.
+      const t = target.value;
+      const openId = detail.value?.instanceId;
+      if (t === null || openId !== instanceId) return;
+      try {
+        const armToken = await getArmToken();
+        const result = await getInstance(t, armToken, instanceId);
+        if (result.ok && detail.value?.instanceId === instanceId) detail.value = result.value;
+      } catch {
+        // Best-effort confirmation; leave the pre-action detail on screen.
+      }
+    })();
   }, 2000);
 }
 
@@ -641,7 +616,6 @@ onUnmounted(() => {
   <TopBar
     :user="user"
     :busy="busy"
-    :keys-in-memory="keysInMemory"
     :tenant-name="tenantName"
     @sign-in="signIn"
     @sign-out="signOut"
@@ -698,22 +672,6 @@ onUnmounted(() => {
             @refresh="refreshRights"
           />
         </div>
-        <!--
-          A CORS block is one config line to fix, so hand the operator both the
-          exact origin (to paste into the portal) and a ready-to-run command.
-        -->
-        <div v-if="error.kind === 'cors' && selectedApp !== null" class="corsfix">
-          <div class="corsrow">
-            <span class="clbl">Origin to allow</span>
-            <code class="mono">{{ appOrigin }}</code>
-            <CopyButton :value="appOrigin" label="Copy origin" />
-          </div>
-          <div class="corsrow">
-            <span class="clbl">Or run</span>
-            <code class="mono cmd">{{ corsCommand }}</code>
-            <CopyButton :value="corsCommand" label="Copy command" />
-          </div>
-        </div>
       </div>
 
       <AppList
@@ -724,7 +682,6 @@ onUnmounted(() => {
         :operable="operable"
         :classifying="classifying"
         :failure-scan="failureScan"
-        :unreachable="unreachable"
         :scanning="scanning"
         :scanning-ids="scanningIds"
         @select="openApp"
@@ -947,43 +904,6 @@ main.landingview {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-
-.corsfix {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-top: 8px;
-  border-top: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
-}
-
-.corsrow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.corsrow .clbl {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  color: var(--text-faint);
-  min-width: 92px;
-}
-
-.corsrow code {
-  font-size: 12px;
-  padding: 2px 6px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg);
-}
-
-.corsrow code.cmd {
-  overflow-x: auto;
-  max-width: 100%;
-  white-space: pre;
 }
 
 .crumbs {

@@ -1,19 +1,30 @@
 /**
- * The Durable Functions HTTP management API, served by the runtime on each
- * function app.
+ * The Durable Functions HTTP management API, reached through the ARM
+ * `hostruntime` proxy rather than the app's own hostname.
  *
- * Why this and not the storage data plane: this API is implemented by the
- * Durable Task extension itself, so it behaves identically whatever the backend
- * is (Azure Storage, MSSQL, Netherite, DTS) and never exposes us to the internal
- * table schema — which Microsoft explicitly warns against depending on.
+ * Why the proxy: ARM exposes every function app's runtime under
+ *   management.azure.com/{resourceId}/hostruntime/{path}
+ * and forwards the request — headers, body, status and response headers — to the
+ * Durable webhook verbatim (paging and error passthrough verified live). This is
+ * how the Azure Portal manages a function app, and it buys us three things a
+ * browser-only tool otherwise cannot have:
+ *   - No CORS: management.azure.com sends permissive CORS headers, so the call
+ *     that a direct `func-a.azurewebsites.net` request would have failed on the
+ *     browser's cross-origin check now just works, on any app, with no per-app
+ *     `az functionapp cors add`.
+ *   - No system key: the proxy authorises on the caller's ARM token via Azure
+ *     RBAC (Website Contributor covers `Microsoft.Web/sites/*`), so no
+ *     app-wide `durabletask_extension` credential is ever pulled into the browser.
+ *   - No Easy Auth wall: the request enters behind App Service Authentication,
+ *     which sits in front of the *public* hostname, not the ARM path.
  *
- * Auth is the app's `durabletask_extension` system key, passed as `?code=`.
- * The key is fetched on demand via ARM (see arm.ts) and lives in memory only.
- *
- * Routes verified against the current docs and the extension source during the
- * design spike:
+ * Auth is therefore the signed-in user's ARM bearer token, passed per call
+ * because it expires — unlike the old never-expiring system key, a `DurableTarget`
+ * cannot carry it. The underlying webhook API (routes, payloads, status codes) is
+ * unchanged; only the base URL and the credential differ:
  *   https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-http-api
  */
+import { ARM_BASE, WEB_API_VERSION } from '../config';
 import { err, ok, type ApiError, type Result } from './errors';
 
 /** Values the runtime reports. `ContinuedAsNew` is transient and rarely seen in a query. */
@@ -105,42 +116,18 @@ export const FAILURE_EVENT_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 export interface DurableTarget {
-  /** The app's real hostname from ARM, e.g. `func-a.azurewebsites.net`. */
-  hostName: string;
-  /** The durabletask_extension system key. Memory-only; never logged or persisted. */
-  systemKey: string;
+  /** Full ARM resource ID of the function app, e.g. `/subscriptions/…/sites/func-a`. */
+  resourceId: string;
 }
 
-function baseUrl(target: DurableTarget): string {
-  return `https://${target.hostName}/runtime/webhooks/durabletask`;
+/** The app's Durable webhook, proxied through ARM's hostruntime bridge. */
+function hostruntimeBase(target: DurableTarget): string {
+  return `${ARM_BASE}${target.resourceId}/hostruntime/runtime/webhooks/durabletask`;
 }
 
-/**
- * Distinguishes an Easy Auth rejection from an ordinary 401.
- *
- * Easy Auth answers with an HTML login page or redirect; the Functions runtime
- * answers a bad system key with a plain/empty body. Verified live during the
- * spike (Easy Auth returned `401` with `Content-Type: text/html` even though the
- * system key was valid).
- *
- * This only ever fires under Node (integration tests). In a browser the same
- * response has no CORS headers, so `fetch` throws first and we report the
- * ambiguous `cors` error instead — by design, since the browser genuinely
- * cannot tell the two apart.
- */
-function looksLikeEasyAuth(response: Response, body: string): boolean {
-  const contentType = response.headers.get('Content-Type') ?? '';
-  return contentType.includes('text/html') || body.includes('<html');
-}
-
-/** A valid system key still yields 401 behind Easy Auth, so the two must be told apart. */
-function map401(response: Response, body: string): ApiError {
-  return looksLikeEasyAuth(response, body)
-    ? {
-        kind: 'easyAuth',
-        message: 'App Service Authentication rejected the call before the runtime saw it',
-      }
-    : { kind: 'auth', message: body || 'The system key was rejected' };
+/** Query params with the required ARM `api-version` always present. */
+function withApiVersion(extra: Record<string, string> = {}): URLSearchParams {
+  return new URLSearchParams({ 'api-version': WEB_API_VERSION, ...extra });
 }
 
 function map429(response: Response): ApiError {
@@ -156,9 +143,10 @@ function map429(response: Response): ApiError {
 function mapStatus(response: Response, body: string, notFound: ApiError): ApiError {
   switch (response.status) {
     case 401:
-      return map401(response, body);
+      // Behind ARM, a 401 means the ARM token was rejected — no system key to blame.
+      return { kind: 'auth', message: body || 'Token rejected by Azure' };
     case 403:
-      return { kind: 'forbidden', message: body || 'Denied by the function app' };
+      return { kind: 'forbidden', message: body || 'Denied by Azure RBAC' };
     case 404:
       return notFound;
     case 429:
@@ -178,7 +166,19 @@ interface RawResponse {
 }
 
 /**
- * One request to the webhook API, with uniform error mapping.
+ * The request shape `call` accepts. Narrower than `RequestInit` on purpose:
+ * `headers` is a plain record (never a Headers object or a tuple array), so
+ * merging in the Authorization header is a safe object spread.
+ */
+interface CallInit {
+  method: string;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+/**
+ * One request to the webhook API through the ARM proxy, with uniform error
+ * mapping and the caller's ARM bearer token attached.
  *
  * `notFound` is supplied per call site because 404 is overloaded: on the
  * collection route it means the app has no Durable Task extension, while on an
@@ -186,18 +186,21 @@ interface RawResponse {
  */
 async function call(
   url: string,
-  init: RequestInit,
+  init: CallInit,
+  token: string,
   notFound: ApiError,
   fetchImpl: typeof fetch
 ): Promise<Result<RawResponse>> {
   let response: Response;
   try {
-    response = await fetchImpl(url, init);
-  } catch {
-    return err({
-      kind: 'cors',
-      message: 'The browser blocked the request to the function app',
+    response = await fetchImpl(url, {
+      ...init,
+      headers: { ...init.headers, Authorization: `Bearer ${token}` },
     });
+  } catch {
+    // ARM sends permissive CORS headers, so a throw here is a real network
+    // failure (offline, DNS, blocked by policy), never a CORS rejection.
+    return err({ kind: 'http', status: 0, message: 'Could not reach management.azure.com' });
   }
 
   const body = await response.text().catch(() => '');
@@ -207,8 +210,11 @@ async function call(
     return err(mapStatus(response, body, notFound));
   }
 
-  const token = response.headers.get(CONTINUATION_HEADER);
-  return ok({ body, continuationToken: token !== null && token !== '' ? token : undefined });
+  const continuation = response.headers.get(CONTINUATION_HEADER);
+  return ok({
+    body,
+    continuationToken: continuation !== null && continuation !== '' ? continuation : undefined,
+  });
 }
 
 function parseJson(body: string): Result<unknown> {
@@ -298,7 +304,7 @@ function toHistoryEvent(row: unknown): HistoryEvent | null {
 }
 
 function buildListQuery(target: DurableTarget, options: ListInstancesOptions): string {
-  const params = new URLSearchParams({ code: target.systemKey });
+  const params = withApiVersion();
 
   if (options.createdTimeFrom) params.set('createdTimeFrom', options.createdTimeFrom.toISOString());
   if (options.createdTimeTo) params.set('createdTimeTo', options.createdTimeTo.toISOString());
@@ -309,7 +315,7 @@ function buildListQuery(target: DurableTarget, options: ListInstancesOptions): s
   if (options.instanceIdPrefix) params.set('instanceIdPrefix', options.instanceIdPrefix);
   if (options.top !== undefined) params.set('top', String(options.top));
 
-  return `${baseUrl(target)}/instances?${params.toString()}`;
+  return `${hostruntimeBase(target)}/instances?${params.toString()}`;
 }
 
 /**
@@ -320,6 +326,7 @@ function buildListQuery(target: DurableTarget, options: ListInstancesOptions): s
  */
 export async function listInstances(
   target: DurableTarget,
+  token: string,
   options: ListInstancesOptions = {},
   fetchImpl: typeof fetch = fetch
 ): Promise<Result<InstancePage>> {
@@ -331,6 +338,7 @@ export async function listInstances(
   const response = await call(
     buildListQuery(target, options),
     { method: 'GET', headers },
+    token,
     // 404 on the collection route means the extension is not installed at all.
     { kind: 'notDurable', message: 'This app has no Durable Functions extension' },
     fetchImpl
@@ -365,10 +373,12 @@ export interface FailureCount {
  */
 export async function countFailedInstances(
   target: DurableTarget,
+  token: string,
   fetchImpl: typeof fetch = fetch
 ): Promise<Result<FailureCount>> {
   const result = await listInstances(
     target,
+    token,
     { runtimeStatus: ['Failed', 'Terminated'], top: 200 },
     fetchImpl
   );
@@ -484,19 +494,24 @@ export function availableActions(runtimeStatus: string): InstanceAction[] {
 
 async function action(
   target: DurableTarget,
+  token: string,
   instanceId: string,
   operation: string,
   params: Record<string, string>,
-  init: RequestInit,
+  init: CallInit,
   fetchImpl: typeof fetch
 ): Promise<Result<void>> {
-  const query = new URLSearchParams({ code: target.systemKey, ...params });
+  const query = withApiVersion(params);
   const path = operation === '' ? '' : `/${operation}`;
-  const url = `${baseUrl(target)}/instances/${encodeURIComponent(instanceId)}${path}?${query.toString()}`;
+  const url = `${hostruntimeBase(target)}/instances/${encodeURIComponent(instanceId)}${path}?${query.toString()}`;
 
   const response = await call(
     url,
-    init,
+    // An explicit empty body forces Content-Length: 0. The hostruntime proxy
+    // answers 411 Length Required to a POST/DELETE that carries neither a body
+    // nor a length (verified live) — the underlying webhook takes no body here.
+    { ...init, body: '' },
+    token,
     { kind: 'http', status: 404, message: `Instance ${instanceId} was not found` },
     fetchImpl
   );
@@ -505,6 +520,7 @@ async function action(
 
 export async function terminateInstance(
   target: DurableTarget,
+  token: string,
   instanceId: string,
   upn: string,
   reason: string,
@@ -512,6 +528,7 @@ export async function terminateInstance(
 ): Promise<Result<void>> {
   return action(
     target,
+    token,
     instanceId,
     'terminate',
     { reason: buildAuditReason(upn, reason) },
@@ -523,6 +540,7 @@ export async function terminateInstance(
 /** Only valid on a Failed instance; the runtime answers 410 Gone otherwise. */
 export async function rewindInstance(
   target: DurableTarget,
+  token: string,
   instanceId: string,
   upn: string,
   reason: string,
@@ -530,6 +548,7 @@ export async function rewindInstance(
 ): Promise<Result<void>> {
   return action(
     target,
+    token,
     instanceId,
     'rewind',
     { reason: buildAuditReason(upn, reason) },
@@ -540,6 +559,7 @@ export async function rewindInstance(
 
 export async function suspendInstance(
   target: DurableTarget,
+  token: string,
   instanceId: string,
   upn: string,
   reason: string,
@@ -547,6 +567,7 @@ export async function suspendInstance(
 ): Promise<Result<void>> {
   return action(
     target,
+    token,
     instanceId,
     'suspend',
     { reason: buildAuditReason(upn, reason) },
@@ -557,6 +578,7 @@ export async function suspendInstance(
 
 export async function resumeInstance(
   target: DurableTarget,
+  token: string,
   instanceId: string,
   upn: string,
   reason: string,
@@ -564,6 +586,7 @@ export async function resumeInstance(
 ): Promise<Result<void>> {
   return action(
     target,
+    token,
     instanceId,
     'resume',
     { reason: buildAuditReason(upn, reason) },
@@ -587,12 +610,14 @@ export async function resumeInstance(
  */
 export async function restartInstance(
   target: DurableTarget,
+  token: string,
   instanceId: string,
   restartWithNewInstanceId: boolean,
   fetchImpl: typeof fetch = fetch
 ): Promise<Result<void>> {
   return action(
     target,
+    token,
     instanceId,
     'restart',
     { restartWithNewInstanceId: String(restartWithNewInstanceId) },
@@ -607,13 +632,14 @@ export async function restartInstance(
  */
 export async function raiseEvent(
   target: DurableTarget,
+  token: string,
   instanceId: string,
   eventName: string,
   payload: unknown,
   fetchImpl: typeof fetch = fetch
 ): Promise<Result<void>> {
-  const query = new URLSearchParams({ code: target.systemKey });
-  const url = `${baseUrl(target)}/instances/${encodeURIComponent(instanceId)}/raiseEvent/${encodeURIComponent(eventName)}?${query.toString()}`;
+  const query = withApiVersion();
+  const url = `${hostruntimeBase(target)}/instances/${encodeURIComponent(instanceId)}/raiseEvent/${encodeURIComponent(eventName)}?${query.toString()}`;
 
   const response = await call(
     url,
@@ -622,6 +648,7 @@ export async function raiseEvent(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     },
+    token,
     { kind: 'http', status: 404, message: `Instance ${instanceId} was not found` },
     fetchImpl
   );
@@ -634,29 +661,31 @@ export async function raiseEvent(
  */
 export async function purgeInstance(
   target: DurableTarget,
+  token: string,
   instanceId: string,
   fetchImpl: typeof fetch = fetch
 ): Promise<Result<void>> {
-  return action(target, instanceId, '', {}, { method: 'DELETE' }, fetchImpl);
+  return action(target, token, instanceId, '', {}, { method: 'DELETE' }, fetchImpl);
 }
 
 /** Full detail for one instance, including execution history for the timeline. */
 export async function getInstance(
   target: DurableTarget,
+  token: string,
   instanceId: string,
   fetchImpl: typeof fetch = fetch
 ): Promise<Result<InstanceDetail>> {
-  const params = new URLSearchParams({
-    code: target.systemKey,
+  const params = withApiVersion({
     showHistory: 'true',
     showHistoryOutput: 'true',
     showInput: 'true',
   });
-  const url = `${baseUrl(target)}/instances/${encodeURIComponent(instanceId)}?${params.toString()}`;
+  const url = `${hostruntimeBase(target)}/instances/${encodeURIComponent(instanceId)}?${params.toString()}`;
 
   const response = await call(
     url,
     { method: 'GET' },
+    token,
     // On an instance route, 404 means this instance is unknown — not that the
     // app lacks the extension.
     { kind: 'http', status: 404, message: `Instance ${instanceId} was not found` },
