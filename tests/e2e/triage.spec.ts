@@ -581,6 +581,36 @@ test.describe('opportunistic failure scan', () => {
   });
 });
 
+test.describe('unreachable apps (Easy Auth)', () => {
+  test.beforeEach(async ({ page }) => {
+    await signInAs(page);
+  });
+
+  /*
+   * The ARM proxy removes CORS and the system-key requirement, but not Easy Auth:
+   * that middleware runs inside the app and still blocks the call. The row flags
+   * it as a fixable config gap — in amber, not the red reserved for failures.
+   */
+  test('flags an app blocked by Easy Auth as needing config', async ({ page }) => {
+    await stubAzure(page, { easyAuth: true });
+    await page.goto('/');
+    await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toBeVisible();
+
+    await expect(page.locator('.blocked')).toContainText('needs config');
+    await expect(page.locator('tbody tr').first()).not.toHaveClass(/problem/);
+  });
+
+  test('opening an Easy Auth app explains the fix, not a raw HTTP error', async ({ page }) => {
+    await stubAzure(page, { easyAuth: true });
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+
+    await expect(page.getByText(/Easy Auth/)).toBeVisible();
+    // The message names the exact path to exclude, not a bare HTTP status.
+    await expect(page.getByText(/runtime\/webhooks\/durabletask/)).toBeVisible();
+  });
+});
+
 test.describe('account menu', () => {
   test('signed out shows a sign-in pill and no avatar', async ({ page }) => {
     await stubAzure(page);

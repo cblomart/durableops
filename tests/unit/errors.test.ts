@@ -23,6 +23,7 @@ describe('isPimRecoverable', () => {
 
   it.each<ApiError>([
     { kind: 'notDurable', message: '' },
+    { kind: 'easyAuth', message: '' },
     { kind: 'http', status: 500, message: '' },
   ])('does not offer a PIM prompt for $kind, which PIM cannot fix', (error) => {
     expect(isPimRecoverable(error)).toBe(false);
@@ -39,6 +40,15 @@ describe('describeError', () => {
   it('names a status-0 network failure as an Azure-reachability problem, not PIM', () => {
     const text = describeError({ kind: 'http', status: 0, message: '' });
     expect(text).toContain('management.azure.com');
+    expect(text).not.toContain('PIM');
+  });
+
+  /* Easy Auth needs an app-config fix (exclude the webhook path), not PIM or a
+   * re-login — the message must point there, not at the token. */
+  it('sends an Easy Auth block to the app-config fix, not to PIM', () => {
+    const text = describeError({ kind: 'easyAuth', message: '' });
+    expect(text).toContain('Easy Auth');
+    expect(text).toContain('/runtime/webhooks/durabletask');
     expect(text).not.toContain('PIM');
   });
 

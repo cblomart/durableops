@@ -176,8 +176,9 @@ describe('listInstances', () => {
   /*
    * ARM sends permissive CORS headers, so a browser fetch never fails the
    * cross-origin check the way a direct app-hostname call did. A throw here is a
-   * genuine network failure, reported as a zero-status http error — there is no
-   * longer any `cors` or `easyAuth` outcome to distinguish.
+   * genuine network failure, reported as a zero-status http error — the `cors`
+   * outcome is gone entirely (Easy Auth is still detected, but from a real HTML
+   * response, not a throw).
    */
   it('maps a fetch throw to a zero-status network error', async () => {
     const fetchMock = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
@@ -193,6 +194,38 @@ describe('listInstances', () => {
     const result = await listInstances(TARGET, TOKEN, {}, fetchMock);
 
     expect(result).toMatchObject({ ok: false, error: { kind: 'auth' } });
+  });
+
+  /*
+   * Easy Auth runs inside the app and rejects the call even through the ARM
+   * proxy, answering with an HTML sign-in/permission page. That HTML body — on
+   * any status (verified live as 401, seen as 400) — is what tells it apart from
+   * an ordinary auth failure, so the operator gets the right fix.
+   */
+  it('detects Easy Auth from an HTML 401 rather than blaming the token', async () => {
+    const fetchMock = mockFetch(
+      new Response(
+        '<html><body>You do not have permission to view this directory or page.</body></html>',
+        {
+          status: 401,
+          headers: { 'Content-Type': 'text/html' },
+        }
+      )
+    );
+
+    const result = await listInstances(TARGET, TOKEN, {}, fetchMock);
+
+    expect(result).toMatchObject({ ok: false, error: { kind: 'easyAuth' } });
+  });
+
+  it('detects Easy Auth on a non-401 status (e.g. 400) from the HTML body', async () => {
+    const fetchMock = mockFetch(
+      new Response('You do not have permission to view this directory or page.', { status: 400 })
+    );
+
+    const result = await listInstances(TARGET, TOKEN, {}, fetchMock);
+
+    expect(result).toMatchObject({ ok: false, error: { kind: 'easyAuth' } });
   });
 
   it('maps 429 to an http error carrying Retry-After', async () => {
