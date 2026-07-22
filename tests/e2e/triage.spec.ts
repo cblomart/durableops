@@ -441,11 +441,11 @@ test.describe('instance detail', () => {
 });
 
 test.describe('permissions', () => {
-  test('a 403 on listkeys offers the PIM remediation and a Refresh rights shortcut', async ({
+  test('a 403 on the data plane offers the PIM remediation and a Refresh rights shortcut', async ({
     page,
   }) => {
     await signInAs(page);
-    await stubAzure(page, { forbidKeys: true });
+    await stubAzure(page, { forbidData: true });
     await page.goto('/');
     await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
 
@@ -501,8 +501,9 @@ test.describe('operability: only show what you can actually use', () => {
 
   /*
    * The exact confusion this filter removes: Reader can SEE every app in the
-   * tenant but cannot fetch a key, so it can operate none of them. Listing them
-   * would just be noise with a 403 waiting behind every click.
+   * tenant but holds only read actions, so it can invoke no host runtime and
+   * operate none of them. Listing them would just be noise with a 403 behind
+   * every click.
    */
   test('hides apps the user cannot operate, and stays calm about it', async ({ page }) => {
     await stubAzure(page, { actions: ['*/read'] });
@@ -520,7 +521,7 @@ test.describe('operability: only show what you can actually use', () => {
     await expect(page.getByRole('link', { name: /Activate access/ })).toHaveCount(0);
   });
 
-  test('shows apps once the user holds listkeys', async ({ page }) => {
+  test('shows apps once the user holds Microsoft.Web/sites/*', async ({ page }) => {
     await stubAzure(page, { actions: ['Microsoft.Web/sites/*'] });
     await page.goto('/');
 
@@ -577,45 +578,6 @@ test.describe('opportunistic failure scan', () => {
       page.getByRole('button', { name: /Re-scan .* for failures/ }).click(),
     ]);
     expect(request.method()).toBe('GET');
-  });
-});
-
-test.describe('unreachable apps (CORS / Easy Auth)', () => {
-  test.beforeEach(async ({ page }) => {
-    await signInAs(page);
-  });
-
-  /*
-   * With no backend, the scan calls the app's own hostname; a browser CORS block
-   * (or Easy Auth) fails that call. The row flags it as a fixable config gap — in
-   * amber, not the red reserved for actual failures.
-   */
-  test('flags an app the browser cannot reach', async ({ page }) => {
-    await stubAzure(page, { blockDataPlane: true });
-    await page.goto('/');
-    await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toBeVisible();
-
-    await expect(page.locator('.blocked')).toContainText('unreachable');
-    await expect(page.locator('tbody tr').first()).not.toHaveClass(/problem/);
-  });
-
-  test('opening a blocked app shows the exact origin and command to fix it', async ({
-    page,
-    context,
-  }) => {
-    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-    await stubAzure(page, { blockDataPlane: true });
-    await page.goto('/');
-    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
-
-    await expect(page.getByText(/browser blocked this request/)).toBeVisible();
-    const fix = page.locator('.corsfix');
-    await expect(fix.locator('code.cmd')).toContainText('az functionapp cors add');
-    await expect(fix.locator('code.cmd')).toContainText(APP_NAME);
-
-    await fix.getByRole('button', { name: 'Copy origin' }).click({ force: true });
-    const clip = await page.evaluate(() => navigator.clipboard.readText());
-    expect(clip).toMatch(/^https?:\/\//);
   });
 });
 

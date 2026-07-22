@@ -8,7 +8,6 @@ import type { Page, Route } from '@playwright/test';
  */
 
 export const APP_NAME = 'func-prod-billing';
-export const HOST = 'func-prod-billing.azurewebsites.net';
 
 function argRow(name: string) {
   return {
@@ -82,31 +81,37 @@ export interface StubOptions {
   detailStatus?: string;
   /** The instance-detail `output`; defaults to a realistic failure when status is Failed. */
   output?: unknown;
-  /** Force listkeys to 403, for the PIM path. */
-  forbidKeys?: boolean;
+  /**
+   * Force the Durable data-plane call to 403, for the PIM path. Through the ARM
+   * proxy, RBAC — not a system key — is what a denied operator hits, so the 403
+   * lands on the instance query, not on listkeys.
+   */
+  forbidData?: boolean;
   /** Trigger bindings ARM reports for the app; drives the durable/not-durable filter. */
   bindings?: string[];
   /** Force the /functions call to 403, so the app classifies as "unknown". */
   forbidFunctions?: boolean;
-  /** Abort every data-plane (durabletask webhook) call, reproducing a browser CORS block. */
-  blockDataPlane?: boolean;
   // RBAC actions the signed-in user holds. Defaults to a role that can operate.
   // Passing only a read wildcard reproduces Reader: sees every app, operates none.
   actions?: string[];
 }
 
-/** Stub every Azure origin the app talks to: ARG, listkeys, /functions, and the webhook API. */
+/**
+ * Stub every Azure origin the app talks to: ARG, the permissions check,
+ * /functions, and the Durable webhook API — the last reached through ARM's
+ * hostruntime proxy (management.azure.com/{resourceId}/hostruntime/...), so the
+ * webhook globs match by path suffix whatever the host.
+ */
 export async function stubAzure(page: Page, options: StubOptions = {}): Promise<void> {
   const {
     instances = [instance('abc123', 'OrderSaga', 'Failed')],
     history = FAILING_HISTORY,
     detailStatus = 'Failed',
     output = detailStatus === 'Failed' ? FAILED_OUTPUT : null,
-    forbidKeys = false,
+    forbidData = false,
     bindings = ['orchestrationTrigger', 'activityTrigger'],
     forbidFunctions = false,
-    blockDataPlane = false,
-    actions = ['Microsoft.Web/sites/read', 'Microsoft.Web/sites/host/listkeys/action'],
+    actions = ['Microsoft.Web/sites/read', 'Microsoft.Web/sites/hostruntime/host/action'],
   } = options;
 
   await page.route('**/providers/Microsoft.ResourceGraph/resources**', (route: Route) =>
@@ -143,33 +148,24 @@ export async function stubAzure(page: Page, options: StubOptions = {}): Promise<
         })
   );
 
-  await page.route('**/host/default/listkeys**', (route: Route) =>
-    forbidKeys
-      ? route.fulfill({ status: 403, body: 'RBAC denied' })
-      : route.fulfill({ json: { systemKeys: { durabletask_extension: 'stub-key' } } })
-  );
-
-  // A blocked data plane: the browser aborts every cross-origin call before the
-  // app reads it — exactly what a missing CORS allow-list (or Easy Auth) does.
-  if (blockDataPlane) {
-    await page.route('**/runtime/webhooks/durabletask/**', (route: Route) => route.abort());
-    return;
-  }
-
   // Instance detail must be routed before the collection route, since the
   // collection glob would otherwise swallow it.
   await page.route(`**/runtime/webhooks/durabletask/instances/*`, (route: Route) =>
-    route.fulfill({
-      json: {
-        ...instance('abc123', 'OrderSaga', detailStatus),
-        output,
-        historyEvents: history,
-      },
-    })
+    forbidData
+      ? route.fulfill({ status: 403, body: 'RBAC denied' })
+      : route.fulfill({
+          json: {
+            ...instance('abc123', 'OrderSaga', detailStatus),
+            output,
+            historyEvents: history,
+          },
+        })
   );
 
   await page.route(`**/runtime/webhooks/durabletask/instances?**`, (route: Route) =>
-    route.fulfill({ json: instances })
+    forbidData
+      ? route.fulfill({ status: 403, body: 'RBAC denied' })
+      : route.fulfill({ json: instances })
   );
 
   // Instance action sub-routes (terminate / suspend / resume / rewind / restart /

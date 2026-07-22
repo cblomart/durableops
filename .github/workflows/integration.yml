@@ -51,30 +51,33 @@ jobs:
           APP: func-durableops-harness-wi6b7
         run: |
           site="/subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${RG}/providers/Microsoft.Web/sites/${APP}"
-          fnkey=$(az rest --method post --uri "${site}/host/default/listkeys?api-version=2023-12-01" \
-            --query "functionKeys.default" -o tsv)
-          syskey=$(az rest --method post --uri "${site}/host/default/listkeys?api-version=2023-12-01" \
-            --query "systemKeys.durabletask_extension" -o tsv)
-          echo "::add-mask::$fnkey"
-          echo "::add-mask::$syskey"
+          # No system key: seed the same way the tests operate — through the ARM
+          # hostruntime proxy, with the caller's ARM token. That exercises the very
+          # path the SPA uses, so a broken proxy fails setup before the tests run.
+          token=$(az account get-access-token --resource https://management.azure.com \
+            --query accessToken -o tsv)
+          echo "::add-mask::$token"
+          dt="https://management.azure.com${site}/hostruntime/runtime/webhooks/durabletask"
 
-          # Purge first: the harness must be idempotent, so a rerun never
-          # inherits instances from the last one.
-          curl -sS -X DELETE \
-            "https://${APP}.azurewebsites.net/runtime/webhooks/durabletask/instances?code=${syskey}&createdTimeFrom=2020-01-01T00:00:00Z" \
+          # Purge first: the harness must be idempotent, so a rerun never inherits
+          # instances from the last one. The empty body sets Content-Length: 0 —
+          # the proxy answers 411 to a POST/DELETE that carries neither.
+          curl -sS -X DELETE --data '' -H "Authorization: Bearer $token" \
+            "${dt}/instances?api-version=2023-12-01&createdTimeFrom=2020-01-01T00:00:00Z" \
             -o /dev/null -w 'purge -> HTTP %{http_code}\n' || true
 
           for s in FailOnActivity FailAfterRetries StuckAtScheduling EternalTimer \
                    WaitForExternalEvent SubOrchestrationFail LongRunningHappy; do
-            curl -sS -X POST "https://${APP}.azurewebsites.net/api/start/${s}?code=${fnkey}" \
+            curl -sS -X POST --data '' -H "Authorization: Bearer $token" \
+              "${dt}/orchestrators/${s}?api-version=2023-12-01" \
               -o /dev/null -w "start ${s} -> HTTP %{http_code}\n"
           done
 
           # Give the orchestrations a moment to reach their states.
           sleep 30
 
-          echo "DURABLEOPS_HARNESS_HOST=${APP}.azurewebsites.net" >> "$GITHUB_ENV"
-          echo "DURABLEOPS_HARNESS_KEY=${syskey}" >> "$GITHUB_ENV"
+          echo "DURABLEOPS_HARNESS_RESOURCE_ID=${site}" >> "$GITHUB_ENV"
+          echo "DURABLEOPS_HARNESS_TOKEN=${token}" >> "$GITHUB_ENV"
 
       - name: Run integration tests
         run: npm run test:integration

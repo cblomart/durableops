@@ -9,8 +9,8 @@ Reference UX: [DurableFunctionsMonitor](https://github.com/microsoft/DurableFunc
 ## How it works
 
 - **Discovery** — Azure Resource Graph, with your ARM token. ARG only returns resources you can see, so the app list is your real access.
-- **Keys** — `listkeys` via ARM, per app, on demand. Fetched when you open an app, kept in memory, never persisted.
-- **Reads and actions** — the Durable Functions HTTP management API on each app. It works on any storage backend and never reads the DurableTask table.
+- **Reads and actions** — the Durable Functions HTTP management API, reached through ARM's `hostruntime` proxy (`management.azure.com/{resourceId}/hostruntime/runtime/webhooks/durabletask/…`), with the same ARM token and authorised by your RBAC. It works on any storage backend and never reads the DurableTask table.
+- **No CORS, no keys** — because every call goes to `management.azure.com`, there is no per-app CORS to configure, no system key to fetch (so no app credential ever touches the browser), and App Service Authentication — which fronts the app's public hostname, not the ARM path — is never in the way. This is how the Azure Portal manages a function app.
 
 ## What it does
 
@@ -22,7 +22,7 @@ Reference UX: [DurableFunctionsMonitor](https://github.com/microsoft/DurableFunc
 
 ## Setup
 
-Three things: an Entra app registration, an operator role, and CORS on each function app.
+Two things: an Entra app registration and an operator role. (No per-app CORS — the ARM proxy removes that entirely.)
 
 ### 1. Entra app registration
 
@@ -52,9 +52,9 @@ az ad app permission grant --id "$APP_ID" \
 
 ### 2. Operator role
 
-DurableOps needs two permissions: `Microsoft.Web/sites/read` (discovery) and `Microsoft.Web/sites/host/listkeys/action` (the durable system key).
+DurableOps needs two permissions: `Microsoft.Web/sites/read` (discovery) and `Microsoft.Web/sites/hostruntime/*` (the Durable webhook API, reached through the ARM proxy). No `listkeys`, so no app system key — nor the master key that the same response would expose — is ever involved.
 
-No built-in role grants `listkeys` without also granting write — the four that include it (Owner, Contributor, Website Contributor, Logic Apps Standard Contributor) all grant `Microsoft.Web/sites/*`. And `listkeys` returns the app's master key in the same response, which DurableOps ignores but the permission still allows. So the role should be **PIM-eligible and time-boxed**, not standing. Two options:
+Every built-in role that can operate a function app — Owner, Contributor, Website Contributor — grants both via `Microsoft.Web/sites/*`, but each grants far more besides, so a built-in role should be **PIM-eligible and time-boxed**, not standing. Two options:
 
 **A — Website Contributor via PIM for Groups (recommended).** Built-in roles only; nothing custom to own.
 
@@ -67,20 +67,7 @@ az role assignment create --assignee-object-id "$GROUP_ID" --assignee-principal-
 
 Then make each operator an **eligible** member of the group in Entra → Groups → PIM. (az can't do this step — its Graph token lacks the PIM-for-Groups scope.) Operators activate for a triage window and click **Refresh rights**.
 
-**B — Custom role.** [`infra/modules/operator-role.bicep`](infra/modules/operator-role.bicep) grants exactly those two actions and nothing else; it can't delete anything. Deploy with `deployOperatorRole=true`. Off by default, since creating a role definition needs Owner or User Access Administrator.
-
-### 3. CORS (and Easy Auth)
-
-The browser calls each app directly, so each app must allow your origin:
-
-```bash
-az functionapp cors add --name <app> --resource-group <rg> \
-  --allowed-origins "https://<your-host>"
-```
-
-For a fleet, enforce this with Azure Policy rather than by hand. Without it, calls fail with an opaque browser CORS error. When that happens, DurableOps shows the exact origin to add.
-
-If an app has **App Service Authentication (Easy Auth)** on, it rejects the call before the runtime checks the key, and from a browser that also looks like a CORS error. Either exclude the `/runtime/webhooks/durabletask` path from Easy Auth, or accept the app is out of reach for a browser-only tool. DurableOps reports this as its own `easyAuth` error so you aren't sent down the CORS path for it.
+**B — Custom role.** [`infra/modules/operator-role.bicep`](infra/modules/operator-role.bicep) grants exactly `sites/read` + `sites/hostruntime/*` and nothing else — no `listkeys`, no write, no delete. This is now a genuinely minimal role, and the recommended one where you can create role definitions. Deploy with `deployOperatorRole=true`. Off by default, since creating a role definition needs Owner or User Access Administrator.
 
 ## Deploy
 
@@ -99,7 +86,7 @@ npm ci && npm run build   # -> dist/
 - **Self-host:** use your own app registration (above), or point users at a shared multi-tenant instance and consent to it once — no registration of your own.
 - **Multi-tenant** (as on durableops.app): set `"multitenant": true` and omit `tenantId`; sign-in goes through `/organizations`. The app registration must be `AzureADMultipleOrgs`. It still only ever acts as the signed-in user under their own RBAC.
 - **Operator notice:** for a publicly-offered instance, EU/Belgian law wants the provider identifiable. Optional `operatorName` / `operatorContact` / `operatorId` render quietly in the in-app About dialog.
-- **CSP:** [`index.html`](index.html) ships a strict CSP allowing three origins — `login.microsoftonline.com`, `management.azure.com`, `*.azurewebsites.net`. Custom domains, App Service Environments, or sovereign clouds need `connect-src` extended.
+- **CSP:** [`index.html`](index.html) ships a strict CSP allowing two origins — `login.microsoftonline.com` and `management.azure.com`. (No `*.azurewebsites.net`: nothing calls a function app's own hostname.) A sovereign-cloud deploy points at a different ARM endpoint and needs `connect-src` adjusted.
 
 Infrastructure is Bicep under [`infra/`](infra/). Prod is a separate Standard SWA released only by CI: merging the release PR cuts a version and deploys it. Dev is a Free SWA. Neither deploy stores a long-lived cloud secret — the pipeline authenticates with OIDC.
 
@@ -109,13 +96,13 @@ Nothing is held at rest.
 
 - **Tool credentials:** none — no backend, secret, or connection string.
 - **Authorization:** enforced by Azure per call against your RBAC. The tool can't grant itself anything.
-- **System keys:** fetched on demand, kept in a memory-only `Map`, never written to storage; cleared on sign-out and Refresh rights.
+- **App keys:** none fetched, ever. The Durable API is reached through the ARM proxy under your own token, so no system key or master key is pulled into the browser at all.
 - **Tokens:** MSAL caches its token in `sessionStorage` (tab-scoped, discarded on close). This is forced by MSAL's redirect flow, not a choice; our own code never reads it (an ESLint rule forbids it).
 - **Persisted:** only favourite app names, in `localStorage`. Nothing else.
 - **Audit:** destructive actions carry a mandatory reason into the target app's own logs; the trail lives app-side, where the tool can't edit it.
 - **Telemetry:** none. MSAL logging is off, and the CSP blocks any other origin.
 
-Residual risks, plainly: the ARM token in `sessionStorage` and any system key in memory are readable by anything that can run script on the page — the strict CSP and two-dependency tree are the defence. `listkeys` is broad (it returns the master key), which is why the role is PIM-eligible. And anyone who can deploy to the hosting origin can serve modified JavaScript, so protect the pipeline.
+Residual risks, plainly: the ARM token in `sessionStorage` is readable by anything that can run script on the page — the strict CSP and two-dependency tree are the defence. The operator role is management-plane over the app's runtime, which is why it should be PIM-eligible, but it no longer carries the broad `listkeys`/master-key grant the old key-based design needed. And anyone who can deploy to the hosting origin can serve modified JavaScript, so protect the pipeline.
 
 ## Development
 

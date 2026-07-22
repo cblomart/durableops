@@ -2,14 +2,17 @@
  * Integration tests against a REAL Azure Durable Functions app.
  *
  * These drive the same `src/api/*` modules the SPA uses, under Node, against the
- * deployed test harness — no browser, so no CORS in the way. This is the layer
- * that catches the runtime disagreeing with our parser: it is what found
- * TaskScheduled carrying "Name" rather than "FunctionName", which the docs never
- * mention and which mocked unit tests can never discover.
+ * deployed test harness — through the ARM hostruntime proxy, exactly as the
+ * browser does. This is the layer that catches the runtime disagreeing with our
+ * parser: it is what found TaskScheduled carrying "Name" rather than
+ * "FunctionName", which the docs never mention and mocked unit tests cannot find.
  *
  * Requires the harness (infra/modules/test-harness.bicep) and:
- *   DURABLEOPS_HARNESS_HOST=<app>.azurewebsites.net
- *   DURABLEOPS_HARNESS_KEY=<durabletask_extension system key>
+ *   DURABLEOPS_HARNESS_RESOURCE_ID=/subscriptions/…/sites/<app>
+ *   DURABLEOPS_HARNESS_TOKEN=<ARM bearer token for management.azure.com>
+ *
+ * Get a token locally with:
+ *   az account get-access-token --resource https://management.azure.com --query accessToken -o tsv
  *
  * Skipped entirely when unset, so `npm test` stays offline and credential-free.
  */
@@ -27,6 +30,7 @@ import {
   restartInstance,
   type DurableTarget,
 } from '../../src/api/durable';
+import { ARM_BASE, WEB_API_VERSION } from '../../src/config';
 import {
   buildTriage,
   detectStuck,
@@ -35,11 +39,11 @@ import {
   instanceErrorSignature,
 } from '../../src/triage';
 
-const hostName = process.env['DURABLEOPS_HARNESS_HOST'] ?? '';
-const systemKey = process.env['DURABLEOPS_HARNESS_KEY'] ?? '';
-const configured = hostName !== '' && systemKey !== '';
+const resourceId = process.env['DURABLEOPS_HARNESS_RESOURCE_ID'] ?? '';
+const token = process.env['DURABLEOPS_HARNESS_TOKEN'] ?? '';
+const configured = resourceId !== '' && token !== '';
 
-const target: DurableTarget = { hostName, systemKey };
+const target: DurableTarget = { resourceId };
 
 describe.skipIf(!configured)('live harness', () => {
   let instances: Awaited<ReturnType<typeof listInstances>>;
@@ -51,7 +55,7 @@ describe.skipIf(!configured)('live harness', () => {
     // cold-start cost, so "a couple of seconds after start" can be well over a
     // minute — observed live, where a 30s window snapshotted it still Running.
     for (let i = 0; i < 70; i++) {
-      instances = await listInstances(target, { top: 50 });
+      instances = await listInstances(target, token, { top: 50 });
       if (
         instances.ok &&
         instances.value.instances.some(
@@ -125,7 +129,7 @@ describe.skipIf(!configured)('live harness', () => {
   });
 
   it('counts the harness failures the way the favourites scan does', async () => {
-    const scan = await countFailedInstances(target);
+    const scan = await countFailedInstances(target, token);
     expect(scan.ok).toBe(true);
     if (!scan.ok) return;
     // The harness seeds FailOnActivity, FailAfterRetries and SubOrchestrationFail,
@@ -134,7 +138,7 @@ describe.skipIf(!configured)('live harness', () => {
   });
 
   it('reports FailOnActivity as Failed with a readable reason', async () => {
-    const detail = await getInstance(target, instanceNamed('FailOnActivity', 'Failed'));
+    const detail = await getInstance(target, token, instanceNamed('FailOnActivity', 'Failed'));
 
     expect(detail.ok).toBe(true);
     if (!detail.ok) return;
@@ -151,7 +155,7 @@ describe.skipIf(!configured)('live harness', () => {
    * the timeline goes anonymous and the stuck hint names an event type.
    */
   it('names the scheduled activity on a real TaskScheduled event', async () => {
-    const detail = await getInstance(target, instanceNamed('StuckAtScheduling'));
+    const detail = await getInstance(target, token, instanceNamed('StuckAtScheduling'));
 
     expect(detail.ok).toBe(true);
     if (!detail.ok) return;
@@ -161,7 +165,7 @@ describe.skipIf(!configured)('live harness', () => {
   });
 
   it('preserves the complete raw event for every history entry', async () => {
-    const detail = await getInstance(target, instanceNamed('FailOnActivity', 'Failed'));
+    const detail = await getInstance(target, token, instanceNamed('FailOnActivity', 'Failed'));
     expect(detail.ok).toBe(true);
     if (!detail.ok) return;
     for (const event of detail.value.historyEvents) {
@@ -172,7 +176,7 @@ describe.skipIf(!configured)('live harness', () => {
   });
 
   it('flags StuckAtScheduling as possibly stuck once the gap is long enough', async () => {
-    const detail = await getInstance(target, instanceNamed('StuckAtScheduling'));
+    const detail = await getInstance(target, token, instanceNamed('StuckAtScheduling'));
 
     expect(detail.ok).toBe(true);
     if (!detail.ok) return;
@@ -186,7 +190,7 @@ describe.skipIf(!configured)('live harness', () => {
   });
 
   it('does not flag a healthy running instance as stuck', async () => {
-    const detail = await getInstance(target, instanceNamed('LongRunningHappy'));
+    const detail = await getInstance(target, token, instanceNamed('LongRunningHappy'));
 
     expect(detail.ok).toBe(true);
     if (!detail.ok) return;
@@ -195,7 +199,7 @@ describe.skipIf(!configured)('live harness', () => {
   });
 
   it('returns a not-found error for an unknown instance', async () => {
-    const detail = await getInstance(target, 'does-not-exist-0000');
+    const detail = await getInstance(target, token, 'does-not-exist-0000');
 
     expect(detail.ok).toBe(false);
     if (detail.ok) return;
@@ -216,7 +220,7 @@ async function waitForStatus(
 ): Promise<string> {
   let last = '';
   for (let i = 0; i < attempts; i++) {
-    const detail = await getInstance(target, instanceId);
+    const detail = await getInstance(target, token, instanceId);
     if (detail.ok) {
       last = detail.value.runtimeStatus;
       if (last === want) return last;
@@ -227,14 +231,19 @@ async function waitForStatus(
 }
 
 /**
- * Start a fresh scenario instance via the webhook start route, using the same
- * system key. Lets each action test seed its own instance so the suite is
- * idempotent and re-runnable, rather than depending on pre-seeded state that a
- * previous action test may already have consumed.
+ * Start a fresh scenario instance via the webhook start route, through the same
+ * ARM proxy and token the tests use. Lets each action test seed its own instance
+ * so the suite is idempotent and re-runnable, rather than depending on pre-seeded
+ * state that a previous action test may already have consumed.
  */
 async function startScenario(scenario: string): Promise<string> {
-  const url = `https://${hostName}/runtime/webhooks/durabletask/orchestrators/${scenario}?code=${encodeURIComponent(systemKey)}`;
-  const response = await fetch(url, { method: 'POST' });
+  const url = `${ARM_BASE}${resourceId}/hostruntime/runtime/webhooks/durabletask/orchestrators/${scenario}?api-version=${WEB_API_VERSION}`;
+  // Empty body => Content-Length: 0, or the proxy answers 411 to the POST.
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: '',
+  });
   const body = (await response.json()) as { id: string };
   return body.id;
 }
@@ -248,44 +257,44 @@ describe.skipIf(!configured)('live harness — actions transition instances', ()
     const id = await startScenario('LongRunningHappy');
     expect(await waitForStatus(target, id, 'Running')).toBe('Running');
 
-    const suspended = await suspendInstance(target, id, UPN, 'integration: pause it');
+    const suspended = await suspendInstance(target, token, id, UPN, 'integration: pause it');
     expect(suspended.ok).toBe(true);
     expect(await waitForStatus(target, id, 'Suspended')).toBe('Suspended');
 
-    const resumed = await resumeInstance(target, id, UPN, 'integration: resume it');
+    const resumed = await resumeInstance(target, token, id, UPN, 'integration: resume it');
     expect(resumed.ok).toBe(true);
     expect(await waitForStatus(target, id, 'Running')).toBe('Running');
 
     // Clean up so re-runs stay tidy.
-    await terminateInstance(target, id, UPN, 'integration: cleanup');
+    await terminateInstance(target, token, id, UPN, 'integration: cleanup');
     await waitForStatus(target, id, 'Terminated');
-    await purgeInstance(target, id);
+    await purgeInstance(target, token, id);
   });
 
   it('raises an external event that a waiting orchestration consumes', async () => {
     const id = await startScenario('WaitForExternalEvent');
     expect(await waitForStatus(target, id, 'Running')).toBe('Running');
 
-    const raised = await raiseEvent(target, id, 'Approval', { approved: true });
+    const raised = await raiseEvent(target, token, id, 'Approval', { approved: true });
     expect(raised.ok).toBe(true);
     // The orchestrator completes once it receives the event.
     expect(await waitForStatus(target, id, 'Completed')).toBe('Completed');
 
-    await purgeInstance(target, id);
+    await purgeInstance(target, token, id);
   });
 
   it('terminates a running instance, then purges it', async () => {
     const id = await startScenario('EternalTimer');
     expect(await waitForStatus(target, id, 'Running')).toBe('Running');
 
-    const terminated = await terminateInstance(target, id, UPN, 'integration: terminate it');
+    const terminated = await terminateInstance(target, token, id, UPN, 'integration: terminate it');
     expect(terminated.ok).toBe(true);
     expect(await waitForStatus(target, id, 'Terminated')).toBe('Terminated');
 
-    const purged = await purgeInstance(target, id);
+    const purged = await purgeInstance(target, token, id);
     expect(purged.ok).toBe(true);
     // After purge the instance is gone: getInstance now 404s.
-    const gone = await getInstance(target, id);
+    const gone = await getInstance(target, token, id);
     expect(gone.ok).toBe(false);
   });
 
@@ -308,9 +317,9 @@ describe.skipIf(!configured)('live harness — actions transition instances', ()
   // terminal state and purge, or it lingers as a Running FailOnActivity that a
   // later run's snapshot could pick up ahead of the seeded failure.
   async function terminateAndPurge(id: string): Promise<void> {
-    await terminateInstance(target, id, UPN, 'integration: cleanup');
+    await terminateInstance(target, token, id, UPN, 'integration: cleanup');
     await waitForStatus(target, id, 'Terminated', 20);
-    await purgeInstance(target, id);
+    await purgeInstance(target, token, id);
   }
 
   it(
@@ -319,7 +328,7 @@ describe.skipIf(!configured)('live harness — actions transition instances', ()
       const id = await startScenario('FailOnActivity');
       expect(await waitForStatus(target, id, 'Failed', FAIL_ATTEMPTS)).toBe('Failed');
 
-      const rewound = await rewindInstance(target, id, UPN, 'integration: rewind it');
+      const rewound = await rewindInstance(target, token, id, UPN, 'integration: rewind it');
       expect(rewound.ok).toBe(true);
 
       await terminateAndPurge(id);
@@ -333,7 +342,7 @@ describe.skipIf(!configured)('live harness — actions transition instances', ()
       const id = await startScenario('FailOnActivity');
       expect(await waitForStatus(target, id, 'Failed', FAIL_ATTEMPTS)).toBe('Failed');
 
-      const restarted = await restartInstance(target, id, false);
+      const restarted = await restartInstance(target, token, id, false);
       expect(restarted.ok).toBe(true);
 
       await terminateAndPurge(id);
