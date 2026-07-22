@@ -6,8 +6,7 @@ name: Release
 #   fix:  -> patch,  feat: -> minor,  feat!/BREAKING CHANGE -> major.
 # Merging that PR tags vX.Y.Z and cuts a GitHub Release. The build reads the
 # version from package.json, so the footer then shows the released version.
-#
-# Deploys stay separate and manual — a tag does not auto-deploy prod.
+# When a release is cut, this then kicks the prod CD (deploy-prod).
 
 on:
   push:
@@ -16,6 +15,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write # to dispatch the prod deploy when a release is created
 
 concurrency:
   group: release-please
@@ -26,3 +26,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: googleapis/release-please-action@v4
+        id: release
+
+      # A Release created with GITHUB_TOKEN does NOT fire `on: release` in other
+      # workflows (GitHub blocks token-created events from cascading). But an
+      # explicit workflow_dispatch IS allowed from GITHUB_TOKEN, so dispatch the
+      # prod deploy here whenever a release is actually cut.
+      - if: ${{ steps.release.outputs.release_created }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run deploy-prod.yml --ref main
