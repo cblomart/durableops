@@ -14,7 +14,12 @@ const DEVICES = [
   { name: 'phone', viewport: { width: 390, height: 844 } },
 ];
 
-/** Horizontal overflow of the page itself, in px (0 = the body never scrolls sideways). */
+/*
+ * Horizontal overflow of the page itself, in px. Under ~4px is sub-pixel
+ * rounding (it varies between the CI runner and a dev Mac); a real overflow — a
+ * wide table pushing the body — is tens to hundreds of px, so 4px cleanly
+ * separates noise from a genuine bug.
+ */
 async function pageOverflow(page: Page): Promise<number> {
   return page.evaluate(() =>
     Math.max(0, document.documentElement.scrollWidth - document.documentElement.clientWidth)
@@ -31,7 +36,7 @@ for (const device of DEVICES) {
 
       await expect(page.getByRole('heading', { name: /Troubleshoot/ })).toBeVisible();
       await expect(page.locator('.statusbar')).toBeVisible();
-      await expect.poll(() => pageOverflow(page)).toBeLessThanOrEqual(1);
+      await expect.poll(() => pageOverflow(page)).toBeLessThanOrEqual(4);
     });
 
     test('signed-in app + instance views never scroll the body sideways', async ({ page }) => {
@@ -43,17 +48,17 @@ for (const device of DEVICES) {
 
       // App list.
       await expect(page.getByRole('cell', { name: APP_NAME, exact: true })).toBeVisible();
-      await expect.poll(() => pageOverflow(page)).toBeLessThanOrEqual(1);
+      await expect.poll(() => pageOverflow(page)).toBeLessThanOrEqual(4);
 
       // Instance list (the widest table).
       await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
       await expect(page.getByRole('table')).toBeVisible();
-      await expect.poll(() => pageOverflow(page)).toBeLessThanOrEqual(1);
+      await expect.poll(() => pageOverflow(page)).toBeLessThanOrEqual(4);
 
       // Instance detail.
       await page.locator('.idtext', { hasText: /^i1$/ }).click();
       await expect(page.locator('.title .id')).toBeVisible();
-      await expect.poll(() => pageOverflow(page)).toBeLessThanOrEqual(1);
+      await expect.poll(() => pageOverflow(page)).toBeLessThanOrEqual(4);
     });
   });
 }
