@@ -69,6 +69,19 @@ describe('loadConfig', () => {
     await expect(loadConfig(fetchMock)).resolves.toEqual(withOperator);
   });
 
+  it('keeps the opt-in project-promotion fields when present', async () => {
+    const withPromo = { ...VALID, showGitHubStar: true, donateUrl: 'https://example.test/sponsor' };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(withPromo));
+
+    await expect(loadConfig(fetchMock)).resolves.toEqual(withPromo);
+  });
+
+  it('omits the promotion fields by default (fork / self-host case)', async () => {
+    const config = await loadConfig(vi.fn().mockResolvedValue(jsonResponse(VALID)));
+    expect(config.showGitHubStar).toBeUndefined();
+    expect(config.donateUrl).toBeUndefined();
+  });
+
   it('caches after the first load and does not re-fetch', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(VALID));
 

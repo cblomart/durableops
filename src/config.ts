@@ -43,6 +43,14 @@ export interface AppConfig {
   operatorContact?: string;
   /** Company registration line if operated by a business, e.g. "BE0123.456.789 · VAT BE0123.456.789". */
   operatorId?: string;
+  /**
+   * Author-promotion links, shown ONLY when the config opts in — so they appear
+   * on the maintainer's own hosting (durableops.app and dev) but not on a fork or
+   * a third party's self-hosted copy, which nudges for the original author.
+   */
+  showGitHubStar?: boolean;
+  /** Donation/sponsorship URL for the maintainer; shown as a quiet "Sponsor" link when set. */
+  donateUrl?: string;
 }
 
 export const ARM_SCOPE = 'https://management.azure.com/user_impersonation';
@@ -112,6 +120,8 @@ function validate(raw: unknown): AppConfig {
   const operatorName = optional(record, 'operatorName');
   const operatorContact = optional(record, 'operatorContact');
   const operatorId = optional(record, 'operatorId');
+  const showGitHubStar = optionalBool(record, 'showGitHubStar');
+  const donateUrl = optional(record, 'donateUrl');
 
   return {
     tenantId,
@@ -121,6 +131,8 @@ function validate(raw: unknown): AppConfig {
     ...(operatorName === undefined ? {} : { operatorName }),
     ...(operatorContact === undefined ? {} : { operatorContact }),
     ...(operatorId === undefined ? {} : { operatorId }),
+    ...(showGitHubStar === undefined ? {} : { showGitHubStar }),
+    ...(donateUrl === undefined ? {} : { donateUrl }),
   };
 }
 

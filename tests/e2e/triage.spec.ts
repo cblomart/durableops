@@ -44,12 +44,6 @@ test.describe('signed out', () => {
 
     await expect(page.locator('.statusbar .ver')).toHaveText(/^v\d+\.\d+\.\d+/);
 
-    // A sober GitHub star nudge in the status bar, linking to the repo.
-    await expect(page.locator('.statusbar').getByRole('link', { name: /Star/ })).toHaveAttribute(
-      'href',
-      /github\.com\/cblomart\/durableops/
-    );
-
     await page.getByRole('button', { name: 'About & legal' }).click();
     const about = page.getByRole('dialog', { name: 'About DurableOps' });
     await expect(about.getByRole('heading', { name: 'Licence' })).toBeVisible();
@@ -59,6 +53,41 @@ test.describe('signed out', () => {
 
     await page.keyboard.press('Escape');
     await expect(about).toHaveCount(0);
+  });
+
+  /*
+   * The star and sponsor links are the maintainer's, shown only when the config
+   * opts in — so a fork or a third party's self-hosted copy shows neither.
+   */
+  test('star and sponsor links appear only when the instance opts in', async ({ page }) => {
+    await stubAzure(page);
+
+    // Default config (the example): no opt-in, so neither link — the fork case.
+    await page.goto('/');
+    await expect(page.locator('.statusbar')).toBeVisible();
+    await expect(page.locator('.statusbar .ghstar')).toHaveCount(0);
+    await expect(page.locator('.statusbar .sponsor')).toHaveCount(0);
+
+    // Opt-in config (the maintainer's hosting): both appear and link out.
+    await page.route('**/config.json', (route) =>
+      route.fulfill({
+        json: {
+          tenantId: '00000000-0000-0000-0000-000000000000',
+          clientId: '11111111-1111-1111-1111-111111111111',
+          showGitHubStar: true,
+          donateUrl: 'https://github.com/sponsors/cblomart',
+        },
+      })
+    );
+    await page.reload();
+    await expect(page.locator('.statusbar').getByRole('link', { name: /Star/ })).toHaveAttribute(
+      'href',
+      /github\.com\/cblomart\/durableops/
+    );
+    await expect(page.locator('.statusbar').getByRole('link', { name: /Sponsor/ })).toHaveAttribute(
+      'href',
+      /sponsors\/cblomart/
+    );
   });
 });
 

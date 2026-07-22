@@ -43,11 +43,16 @@ jobs:
       # /organizations.
       - name: Generate config.json
         run: |
+          # showGitHubStar is on: this IS the maintainer's hosting. donateUrl is
+          # added only when the repo variable is set, so the Sponsor link stays
+          # hidden until a donation URL exists.
           jq -n \
             --arg clientId "${{ vars.DURABLEOPS_CLIENT_ID }}" \
             --arg name "${{ vars.DURABLEOPS_OPERATOR_NAME }}" \
             --arg contact "${{ vars.DURABLEOPS_OPERATOR_CONTACT }}" \
-            '{clientId: $clientId, multitenant: true, operatorName: $name, operatorContact: $contact}' \
+            --arg donate "${{ vars.DURABLEOPS_DONATE_URL }}" \
+            '{clientId: $clientId, multitenant: true, operatorName: $name, operatorContact: $contact, showGitHubStar: true}
+              + (if $donate == "" then {} else {donateUrl: $donate} end)' \
             > dist/config.json
           jq -e '.clientId != ""' dist/config.json > /dev/null
           cat dist/config.json

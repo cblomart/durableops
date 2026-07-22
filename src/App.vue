@@ -9,7 +9,7 @@ import CopyButton from './components/CopyButton.vue';
 import AboutDialog from './components/AboutDialog.vue';
 import { emptyFilters, type Filters } from './filters';
 import { getArmToken, getSignedInUser, signIn, signOut, type SignedInUser } from './auth';
-import { adminConsentUrl } from './config';
+import { adminConsentUrl, getConfig } from './config';
 import {
   cachedKeyCount,
   checkOperabilityForApps,
@@ -222,6 +222,14 @@ const adminConsentHref = adminConsentUrl(appOrigin);
 const appVersion = __APP_VERSION__;
 const buildSha = __BUILD_SHA__;
 const showAbout = ref(false);
+
+/**
+ * Author-promotion links, opt-in per deployment so they only show on the
+ * maintainer's own hosting, never on a fork or a third party's copy.
+ */
+const showGitHubStar = getConfig().showGitHubStar === true;
+const donateUrl = getConfig().donateUrl;
+const REPO_URL = 'https://github.com/cblomart/durableops';
 
 /** A ready-to-run command to allow this origin on the currently open app. */
 const corsCommand = computed(() => {
@@ -803,8 +811,9 @@ onUnmounted(() => {
       one-click "like" that waits on GitHub.
     -->
     <a
+      v-if="showGitHubStar"
       class="ghstar"
-      href="https://github.com/cblomart/durableops"
+      :href="REPO_URL"
       target="_blank"
       rel="noopener noreferrer"
       title="Like DurableOps? Star it on GitHub"
@@ -823,6 +832,18 @@ onUnmounted(() => {
       </svg>
       <span class="star" aria-hidden="true">☆</span>
       Star
+    </a>
+    <!-- Same sober treatment as the star; a bigger ask, so kept just as quiet. -->
+    <a
+      v-if="donateUrl"
+      class="sponsor"
+      :href="donateUrl"
+      target="_blank"
+      rel="noopener noreferrer"
+      title="Support DurableOps"
+    >
+      <span class="heart" aria-hidden="true">♥</span>
+      Sponsor
     </a>
     <button class="aboutlink" @click="showAbout = true">About &amp; legal</button>
   </footer>
@@ -1081,5 +1102,27 @@ main {
 /* The one flicker of colour: hovering previews the gold star you'd leave. */
 .ghstar:hover .star {
   color: #e3b341;
+}
+
+.sponsor {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 11px;
+}
+
+.sponsor:hover {
+  color: var(--text);
+}
+
+.sponsor .heart {
+  color: var(--text-faint);
+  transition: color 0.15s ease;
+}
+
+.sponsor:hover .heart {
+  color: #db61a2;
 }
 </style>

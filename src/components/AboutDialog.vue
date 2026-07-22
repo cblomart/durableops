@@ -79,10 +79,14 @@ onBeforeUnmount(() => {
             >
             (© Microsoft Corporation).
           </p>
-          <p class="gh">
+          <p v-if="config.showGitHubStar" class="gh">
             If DurableOps saved you time, a
             <a :href="REPO" target="_blank" rel="noopener noreferrer">star on GitHub</a> helps
-            others find it.
+            others find it<template v-if="config.donateUrl"
+              >, and you can
+              <a :href="config.donateUrl" target="_blank" rel="noopener noreferrer">sponsor</a> its
+              upkeep</template
+            >.
           </p>
         </section>
 
