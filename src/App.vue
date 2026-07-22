@@ -648,7 +648,7 @@ onUnmounted(() => {
     @refresh-rights="refreshRights"
   />
 
-  <main>
+  <main :class="{ landingview: user === null }">
     <section v-if="user === null" class="landing">
       <h1 class="ltitle">Troubleshoot Azure Durable Functions at scale</h1>
       <p class="lsub">
@@ -858,9 +858,19 @@ main {
   padding-bottom: 24px;
 }
 
+/* Signed out, main holds only the landing — centre it so a big screen doesn't
+   feel empty with everything pinned to the top-left. */
+main.landingview {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+
 .landing {
-  padding: 40px 16px;
+  width: 100%;
   max-width: 68ch;
+  padding: 40px 24px;
 }
 
 .ltitle {

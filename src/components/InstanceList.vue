@@ -337,68 +337,70 @@ onBeforeUnmount(() => {
         flex wrapper (.cell) — putting display:flex on the <td> itself removes it
         from the table's column sizing and is what broke the alignment before.
       -->
-      <table class="grid">
-        <colgroup>
-          <col class="col-id" />
-          <col class="col-orch" />
-          <col class="col-status" />
-          <col class="col-error" />
-          <col class="col-created" />
-        </colgroup>
-        <thead>
-          <tr>
-            <th>Instance ID</th>
-            <th>Orchestrator</th>
-            <th>Status</th>
-            <th>Error</th>
-            <th class="right">Created</th>
-          </tr>
-        </thead>
-        <tbody ref="rowsBody">
-          <tr
-            v-for="(instance, idx) in visible"
-            :key="instance.instanceId"
-            :data-idx="idx"
-            class="row"
-            :class="{ problem: isProblem(instance), selected: idx === selected }"
-            @click="emit('select', instance)"
-          >
-            <td>
-              <div class="cell">
-                <span class="idtext mono">{{ instance.instanceId }}</span>
-                <CopyButton :value="instance.instanceId" label="Copy instance ID" />
-              </div>
-            </td>
-            <td>{{ instance.name || '—' }}</td>
-            <td>
-              <span class="badge" :class="instance.runtimeStatus.toLowerCase()">
-                {{ instance.runtimeStatus }}
-              </span>
-            </td>
-            <!--
+      <div class="tablescroll">
+        <table class="grid">
+          <colgroup>
+            <col class="col-id" />
+            <col class="col-orch" />
+            <col class="col-status" />
+            <col class="col-error" />
+            <col class="col-created" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Instance ID</th>
+              <th>Orchestrator</th>
+              <th>Status</th>
+              <th>Error</th>
+              <th class="right">Created</th>
+            </tr>
+          </thead>
+          <tbody ref="rowsBody">
+            <tr
+              v-for="(instance, idx) in visible"
+              :key="instance.instanceId"
+              :data-idx="idx"
+              class="row"
+              :class="{ problem: isProblem(instance), selected: idx === selected }"
+              @click="emit('select', instance)"
+            >
+              <td>
+                <div class="cell">
+                  <span class="idtext mono">{{ instance.instanceId }}</span>
+                  <CopyButton :value="instance.instanceId" label="Copy instance ID" />
+                </div>
+              </td>
+              <td>{{ instance.name || '—' }}</td>
+              <td>
+                <span class="badge" :class="instance.runtimeStatus.toLowerCase()">
+                  {{ instance.runtimeStatus }}
+                </span>
+              </td>
+              <!--
               The error, inline, straight from the list payload (`output`): the
               operator sees WHAT broke without opening anything. Truncated with
               the full text on hover; the row click opens the full investigation.
             -->
-            <td class="err">
-              <div class="cell">
-                <span class="errtext" :title="instanceErrorSignature(instance)">{{
-                  instanceErrorSignature(instance)
-                }}</span>
-                <CopyButton
-                  v-if="instanceErrorSignature(instance) !== ''"
-                  :value="instanceErrorSignature(instance)"
-                  label="Copy error"
-                />
-              </div>
-            </td>
-            <!-- Relative age for fast "when did this start" anchoring; exact time on hover. -->
-            <td class="right faint" :title="instance.createdTime">
-              {{ relativeTime(instance.createdTime) }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
+              <td class="err">
+                <div class="cell">
+                  <span class="errtext" :title="instanceErrorSignature(instance)">{{
+                    instanceErrorSignature(instance)
+                  }}</span>
+                  <CopyButton
+                    v-if="instanceErrorSignature(instance) !== ''"
+                    :value="instanceErrorSignature(instance)"
+                    label="Copy error"
+                  />
+                </div>
+              </td>
+              <!-- Relative age for fast "when did this start" anchoring; exact time on hover. -->
+              <td class="right faint" :title="instance.createdTime">
+                {{ relativeTime(instance.createdTime) }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
       <div class="more">
         <span class="faint">
@@ -583,8 +585,15 @@ input[type='number'] {
   max-width: 62ch;
 }
 
+/* The grid scrolls inside its own box on a narrow screen, so the page body
+   never scrolls sideways (tablet/phone). */
+.tablescroll {
+  overflow-x: auto;
+}
+
 .grid {
   width: 100%;
+  min-width: 640px;
   border-collapse: collapse;
   /* Fixed layout: columns take the colgroup widths, not their content, so the
      header and every row line up no matter how long an id or error is. */

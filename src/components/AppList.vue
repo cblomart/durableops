@@ -210,101 +210,103 @@ watch([visible, () => props.loading, () => props.classifying], () => void nextTi
 
     <p v-else-if="visible.length === 0" class="state muted">No app matches “{{ search }}”.</p>
 
-    <table v-else class="grid">
-      <thead>
-        <tr>
-          <th class="star" aria-label="Favourite"></th>
-          <th>Name</th>
-          <th>Health</th>
-          <th>Resource group</th>
-          <th>Region</th>
-          <th>State</th>
-        </tr>
-      </thead>
-      <tbody ref="body">
-        <tr
-          v-for="app in visible"
-          :key="app.id"
-          :data-app-id="app.id"
-          class="row"
-          :class="{
-            problem: (failuresOf(app)?.count ?? 0) > 0,
-            blockedrow: isUnreachable(app),
-          }"
-          @click="$emit('select', app)"
-        >
-          <td class="star">
-            <button
-              class="starbtn"
-              :class="{ on: isFavorite(app.name) }"
-              :aria-label="
-                isFavorite(app.name) ? `Unfavourite ${app.name}` : `Favourite ${app.name}`
-              "
-              :aria-pressed="isFavorite(app.name)"
-              @click.stop="toggleFavorite(app.name)"
-            >
-              {{ isFavorite(app.name) ? '★' : '☆' }}
-            </button>
-          </td>
-          <!--
+    <div v-else class="tablescroll">
+      <table class="grid">
+        <thead>
+          <tr>
+            <th class="star" aria-label="Favourite"></th>
+            <th>Name</th>
+            <th>Health</th>
+            <th>Resource group</th>
+            <th>Region</th>
+            <th>State</th>
+          </tr>
+        </thead>
+        <tbody ref="body">
+          <tr
+            v-for="app in visible"
+            :key="app.id"
+            :data-app-id="app.id"
+            class="row"
+            :class="{
+              problem: (failuresOf(app)?.count ?? 0) > 0,
+              blockedrow: isUnreachable(app),
+            }"
+            @click="$emit('select', app)"
+          >
+            <td class="star">
+              <button
+                class="starbtn"
+                :class="{ on: isFavorite(app.name) }"
+                :aria-label="
+                  isFavorite(app.name) ? `Unfavourite ${app.name}` : `Favourite ${app.name}`
+                "
+                :aria-pressed="isFavorite(app.name)"
+                @click.stop="toggleFavorite(app.name)"
+              >
+                {{ isFavorite(app.name) ? '★' : '☆' }}
+              </button>
+            </td>
+            <!--
             An app we could not classify (stopped, or not readable) is listed
             plainly, with no marker: it stays visible so nothing is silently
             dropped, but it carries no explanation the operator would have to
             decode. If it turns out not to be durable, opening it says so.
           -->
-          <td class="name">{{ app.name }}</td>
-          <!--
+            <td class="name">{{ app.name }}</td>
+            <!--
             Failures are first-class on an ops tool, so they get their own column
             plus a row-level treatment (tint + red edge, matching the instance
             list) — a bold, plainly-worded count, never a decorative pill. A
             scanned clean app shows a quiet tick; an unscanned one shows nothing.
             Kept out of the Name cell so the app's name stays its own identity.
           -->
-          <td class="health">
-            <!--
+            <td class="health">
+              <!--
               An app whose data plane the browser cannot reach (CORS/Easy Auth)
               can't be scanned at all, so it leads with a fixable-config flag
               rather than a blank or a misleading tick. Opening it shows the exact
               origin and command to fix it.
             -->
-            <span
-              v-if="isUnreachable(app)"
-              class="blocked"
-              title="Unreachable from this browser — the app must allow this origin (CORS) or exclude the durabletask path from Easy Auth. Open it for the exact fix."
-              >⚠ unreachable</span
-            >
-            <span
-              v-else-if="failuresOf(app) && failuresOf(app)!.count > 0"
-              class="failcount"
-              :title="`${failuresOf(app)!.count}${failuresOf(app)!.more ? '+' : ''} failed or terminated instance(s)`"
-            >
-              <span class="fdot" aria-hidden="true"></span>
-              {{ failuresOf(app)!.count }}{{ failuresOf(app)!.more ? '+' : '' }} failed
-            </span>
-            <span
-              v-else-if="failuresOf(app)"
-              class="clean"
-              title="No failed or terminated instances found"
-              >✓ healthy</span
-            >
-            <!-- Per-app manual refresh: re-scan this app's failure count now. -->
-            <RefreshButton
-              :busy="scanningIds.has(app.id)"
-              :label="`Re-scan ${app.name} for failures`"
-              @refresh="$emit('rescan', app)"
-            />
-          </td>
-          <td class="muted">{{ app.resourceGroup }}</td>
-          <td class="muted">{{ app.location }}</td>
-          <td>
-            <span v-if="app.state !== 'Running'" class="badge stopped" :title="app.state">
-              {{ app.state }}
-            </span>
-            <span v-else class="faint">Running</span>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+              <span
+                v-if="isUnreachable(app)"
+                class="blocked"
+                title="Unreachable from this browser — the app must allow this origin (CORS) or exclude the durabletask path from Easy Auth. Open it for the exact fix."
+                >⚠ unreachable</span
+              >
+              <span
+                v-else-if="failuresOf(app) && failuresOf(app)!.count > 0"
+                class="failcount"
+                :title="`${failuresOf(app)!.count}${failuresOf(app)!.more ? '+' : ''} failed or terminated instance(s)`"
+              >
+                <span class="fdot" aria-hidden="true"></span>
+                {{ failuresOf(app)!.count }}{{ failuresOf(app)!.more ? '+' : '' }} failed
+              </span>
+              <span
+                v-else-if="failuresOf(app)"
+                class="clean"
+                title="No failed or terminated instances found"
+                >✓ healthy</span
+              >
+              <!-- Per-app manual refresh: re-scan this app's failure count now. -->
+              <RefreshButton
+                :busy="scanningIds.has(app.id)"
+                :label="`Re-scan ${app.name} for failures`"
+                @refresh="$emit('rescan', app)"
+              />
+            </td>
+            <td class="muted">{{ app.resourceGroup }}</td>
+            <td class="muted">{{ app.location }}</td>
+            <td>
+              <span v-if="app.state !== 'Running'" class="badge stopped" :title="app.state">
+                {{ app.state }}
+              </span>
+              <span v-else class="faint">Running</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </section>
 </template>
 
@@ -350,8 +352,15 @@ watch([visible, () => props.loading, () => props.classifying], () => void nextTi
   max-width: 62ch;
 }
 
+/* Scroll the table inside its own box on a narrow screen, so the page body
+   never scrolls sideways (tablet/phone). */
+.tablescroll {
+  overflow-x: auto;
+}
+
 .grid {
   width: 100%;
+  min-width: 720px;
   border-collapse: collapse;
 }
 
