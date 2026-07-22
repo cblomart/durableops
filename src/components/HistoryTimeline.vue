@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, useTemplateRef, nextTick } from 'vue';
+import { computed, ref, useTemplateRef, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import type { HistoryEvent } from '../api/durable';
 import { failureIndices, failureIndicesWithContext, gapBefore, isFailureEvent } from '../triage';
 import JsonBlock from './JsonBlock.vue';
@@ -77,6 +77,63 @@ async function step(delta: number): Promise<void> {
   const index = failures.value[cursor.value];
   if (index !== undefined) await scrollTo(index);
 }
+
+/*
+ * Keyboard walk through the timeline, mirroring the instance list: j/k (or ↑/↓)
+ * move between events, Enter/Space expands the focused one. It rides on the event
+ * lines' own focus — each is already a button — so Enter stays native and screen
+ * readers announce each event as it is reached. Scoped to fire only when focus is
+ * loose or already inside the timeline, so it never steals keys from the action
+ * dialog or the breadcrumb above.
+ */
+function isTypingTarget(target: EventTarget | null): boolean {
+  const tag = (target as HTMLElement | null)?.tagName;
+  return tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA';
+}
+
+/** j/↓ = 1, k/↑ = -1, otherwise 0 (not a move key). */
+function navDelta(key: string): number {
+  if (key === 'j' || key === 'ArrowDown') return 1;
+  if (key === 'k' || key === 'ArrowUp') return -1;
+  return 0;
+}
+
+function lineButtons(): HTMLButtonElement[] {
+  return Array.from(rowsRef.value?.querySelectorAll<HTMLButtonElement>('button.line') ?? []);
+}
+
+/** A nav key drives the timeline only when not typing and focus is loose or inside it. */
+function withinTimeline(target: EventTarget | null, container: HTMLElement): boolean {
+  if (isTypingTarget(target)) return false;
+  const node = target as Node | null;
+  return node === document.body || (node !== null && container.contains(node));
+}
+
+function nextButton(delta: number, buttons: HTMLButtonElement[]): HTMLButtonElement | undefined {
+  const current = buttons.findIndex((button) => button === document.activeElement);
+  // From "nothing focused", j lands on the first event, k on the last.
+  const next = current < 0 ? (delta > 0 ? 0 : buttons.length - 1) : current + delta;
+  return buttons[Math.max(0, Math.min(buttons.length - 1, next))];
+}
+
+function onKeydown(event: KeyboardEvent): void {
+  const delta = navDelta(event.key);
+  const container = rowsRef.value;
+  if (delta === 0 || container === null || !withinTimeline(event.target, container)) return;
+  const buttons = lineButtons();
+  if (buttons.length === 0) return;
+  event.preventDefault();
+  const button = nextButton(delta, buttons);
+  button?.focus({ preventScroll: true });
+  button?.scrollIntoView({ block: 'nearest' });
+}
+
+onMounted(() => {
+  document.addEventListener('keydown', onKeydown);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onKeydown);
+});
 </script>
 
 <template>
@@ -84,6 +141,11 @@ async function step(delta: number): Promise<void> {
     <header class="bar">
       <span class="title">History</span>
       <span class="faint">{{ events.length }} event{{ events.length === 1 ? '' : 's' }}</span>
+
+      <!-- Same key-cap language as the list, so nothing new to learn. -->
+      <span v-if="events.length > 1" class="kbd faint" title="Move and expand events">
+        <kbd>↑</kbd><kbd>↓</kbd> move · <kbd>↵</kbd> expand
+      </span>
 
       <div class="spacer" />
 
@@ -315,5 +377,34 @@ async function step(delta: number): Promise<void> {
 .expandall {
   font-size: 11px;
   padding: 1px 8px;
+}
+
+.kbd {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.kbd kbd {
+  display: inline-block;
+  min-width: 16px;
+  padding: 1px 5px;
+  margin: 0 1px;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  line-height: 1.35;
+  text-align: center;
+  color: var(--text-dim);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  /* A thicker bottom edge reads as a raised physical keycap. */
+  border-bottom-width: 2px;
+  border-radius: 4px;
+}
+
+/* No physical keyboard on a phone, and the header is tight there — hide the hint. */
+@media (max-width: 640px) {
+  .kbd {
+    display: none;
+  }
 }
 </style>
