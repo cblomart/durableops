@@ -82,11 +82,14 @@ onBeforeUnmount(() => {
           <p v-if="config.showGitHubStar" class="gh">
             If DurableOps saved you time, a
             <a :href="REPO" target="_blank" rel="noopener noreferrer">star on GitHub</a> helps
-            others find it<template v-if="config.donateUrl"
-              >, and you can
-              <a :href="config.donateUrl" target="_blank" rel="noopener noreferrer">sponsor</a> its
-              upkeep</template
-            >.
+            others find it.
+          </p>
+          <p v-if="config.donateUrl" class="gh">
+            And if it ever saved your night, you can
+            <a :href="config.donateUrl" target="_blank" rel="noopener noreferrer"
+              >buy me a coffee</a
+            >
+            — completely optional, always appreciated.
           </p>
         </section>
 

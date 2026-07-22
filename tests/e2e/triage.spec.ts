@@ -75,7 +75,7 @@ test.describe('signed out', () => {
           tenantId: '00000000-0000-0000-0000-000000000000',
           clientId: '11111111-1111-1111-1111-111111111111',
           showGitHubStar: true,
-          donateUrl: 'https://github.com/sponsors/cblomart',
+          donateUrl: 'https://ko-fi.com/cblomart',
         },
       })
     );
@@ -84,9 +84,9 @@ test.describe('signed out', () => {
       'href',
       /github\.com\/cblomart\/durableops/
     );
-    await expect(page.locator('.statusbar').getByRole('link', { name: /Sponsor/ })).toHaveAttribute(
+    await expect(page.locator('.statusbar .sponsor')).toHaveAttribute(
       'href',
-      /sponsors\/cblomart/
+      /ko-fi\.com\/cblomart/
     );
   });
 });

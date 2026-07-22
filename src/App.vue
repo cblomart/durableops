@@ -840,10 +840,10 @@ onUnmounted(() => {
       :href="donateUrl"
       target="_blank"
       rel="noopener noreferrer"
-      title="Support DurableOps"
+      title="Enjoying DurableOps? Buy me a coffee ☕"
     >
       <span class="heart" aria-hidden="true">♥</span>
-      Sponsor
+      Support
     </a>
     <button class="aboutlink" @click="showAbout = true">About &amp; legal</button>
   </footer>
