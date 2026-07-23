@@ -334,6 +334,34 @@ test.describe('instance detail', () => {
     await expect(failedRow.getByText('Raw event')).toBeVisible();
   });
 
+  /*
+   * The timeline reuses the list's keyboard language exactly — j/k move, Enter
+   * expands — so investigation flows from the same hand position as triage.
+   */
+  test('walks the timeline with the keyboard (j/k move, Enter expands)', async ({ page }) => {
+    await stubAzure(page);
+    await page.goto('/');
+    await page.getByRole('cell', { name: APP_NAME, exact: true }).click();
+    await page.locator('.idtext', { hasText: /^abc123$/ }).click();
+
+    const lines = page.locator('.timeline button.line');
+    await expect(lines.first()).toBeVisible();
+
+    // j lands on the first event with no click, mirroring the list.
+    await page.keyboard.press('j');
+    await expect(lines.first()).toBeFocused();
+
+    // Enter expands the focused event (native button activation).
+    await page.keyboard.press('Enter');
+    await expect(lines.first()).toHaveAttribute('aria-expanded', 'true');
+
+    // j moves down, k moves back up.
+    await page.keyboard.press('j');
+    await expect(lines.nth(1)).toBeFocused();
+    await page.keyboard.press('k');
+    await expect(lines.first()).toBeFocused();
+  });
+
   test('surfaces instance input and custom status, and expands every event at once', async ({
     page,
   }) => {
