@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/cblomart/durableops/compare/durableops-v0.4.0...durableops-v0.5.0) (2026-07-23)
+
+
+### Features
+
+* keyboard navigation for the history timeline ([#15](https://github.com/cblomart/durableops/issues/15)) ([a9dd13f](https://github.com/cblomart/durableops/commit/a9dd13fd8c39099ae8881bd7ad4f4148fe556539))
+
 ## [0.4.0](https://github.com/cblomart/durableops/compare/durableops-v0.3.0...durableops-v0.4.0) (2026-07-22)
 
 
