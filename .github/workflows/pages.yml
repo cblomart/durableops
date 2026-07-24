@@ -46,7 +46,7 @@ jobs:
             '{clientId: $clientId, multitenant: true}' > dist/config.json
           jq -e '.clientId != ""' dist/config.json > /dev/null
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: dist
 
