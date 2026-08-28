@@ -30,7 +30,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
-    "@azure/msal-browser": "5.17.1",
+    "@azure/msal-browser": "5.19.0",
     "vue": "3.5.40"
   },
   "devDependencies": {
